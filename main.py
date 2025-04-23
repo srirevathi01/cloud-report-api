@@ -12,6 +12,10 @@ app = FastAPI()
 with open("config.json", "r") as config_file:
     config = json.load(config_file)
 
+# Load the config file
+with open("config.json", "r") as config_file:
+    config = json.load(config_file)
+
 @app.middleware("http")
 async def global_response_formatter(request: Request, call_next):
     try:
