@@ -2,17 +2,22 @@ from fastapi import APIRouter
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from utils.response_formatter import format_response  # Import the response formatter
+import json
+
+# Load the config file
+with open("config.json", "r") as config_file:
+    config = json.load(config_file)
 
 router = APIRouter()
 
 @router.get("/{aws_account_id}/regions")
-def get_active_regions(aws_account_id: str):
+def get_regions(aws_account_id: str):
     """
-    Fetch active regions for the given AWS account ID.
+    Fetch active and inactive regions for the given AWS account ID.
     """
     try:
-        # Fetch active regions using the helper function
-        active_regions = fetch_active_regions_for_account(aws_account_id)
+        # Fetch active and inactive regions using the helper function
+        regions = fetch_regions_for_account(aws_account_id)
         
         # Use the common response formatter
         return format_response(
@@ -20,7 +25,8 @@ def get_active_regions(aws_account_id: str):
             status_message='Successfully fetched the regions',
             data={
                 "aws_account_id": aws_account_id,
-                "active_regions": active_regions
+                "active_regions": regions["active_regions"],
+                "inactive_regions": regions["inactive_regions"]
             }
         )
     except Exception as e:
@@ -31,14 +37,24 @@ def get_active_regions(aws_account_id: str):
             data={}
         )
 
-def fetch_active_regions_for_account(aws_account_id: str):
+def fetch_regions_for_account(aws_account_id: str):
     """
-    Fetch active regions for an AWS account using an IAM STS role.
+    Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
     try:
+        # Fetch the role name from the config file
+        role_name = None
+        for account in config["accounts"]:
+            if account["account_id"] == aws_account_id:
+                role_name = account["role_name"]
+                break
+
+        if not role_name:
+            raise Exception(f"No role found for AWS account ID: {aws_account_id}")
+
         # Define the role ARN and session name
-        role_arn = f"arn:aws:iam::{aws_account_id}:role/YourRoleName"
-        session_name = "fetchActiveRegionsSession"
+        role_arn = f"arn:aws:iam::{aws_account_id}:role/{role_name}"
+        session_name = "fetchRegionsSession"
 
         # Assume the role
         sts_client = boto3.client("sts")
@@ -58,11 +74,24 @@ def fetch_active_regions_for_account(aws_account_id: str):
             aws_session_token=credentials["SessionToken"]
         )
 
-        # Fetch all available regions
-        regions_response = ec2_client.describe_regions()
-        regions = [region["RegionName"] for region in regions_response["Regions"]]
+        # Fetch all regions (active and inactive)
+        regions_response = ec2_client.describe_regions(AllRegions=True)
+        regions = regions_response["Regions"]
 
-        return regions
+        # Separate active and inactive regions with full details
+        active_regions = [
+            {"RegionName": region["RegionName"], "OptInStatus": region["OptInStatus"]}
+            for region in regions if region["OptInStatus"] in ["opt-in-not-required", "opted-in"]
+        ]
+        inactive_regions = [
+            {"RegionName": region["RegionName"], "OptInStatus": region["OptInStatus"]}
+            for region in regions if region["OptInStatus"] == "not-opted-in"
+        ]
+
+        return {
+            "active_regions": active_regions,
+            "inactive_regions": inactive_regions
+        }
 
     except (BotoCoreError, ClientError) as e:
         raise Exception(f"Failed to fetch regions: {str(e)}")
