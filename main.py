@@ -52,7 +52,7 @@ async def global_response_formatter(request: Request, call_next):
                 status_message="Success",
                 data=data  # Pass the parsed JSON object
             )
-            return JSONResponse(content=formatted_response, status_code=200)
+            return JSONResponse(content=data, status_code=200)
 
         # Return the original response if it's not JSON
         return response
