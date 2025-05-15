@@ -1,0 +1,92 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+.env/
+
+# Environments
+.env
+.env.*
+
+# Testing
+.coverage
+.tox/
+.nox/
+pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pyre
+.pyre/
+
+# Pytest
+.cache/
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# Local Docker files
+docker-compose.override.yml
+*.pid
+
+# Uvicorn and Gunicorn reload artifacts
+*.reload
+
+# Static and media (if applicable)
+staticfiles/
+media/
+
+# __init__.py in root
+__init__.py
+
+# Coverage reports
+htmlcov/
+
+# FastAPI specific (optional)
+instance/
