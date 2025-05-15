@@ -1,12 +1,6 @@
-{
-    "accounts": [
-        {
-            "account_id": "729047448122",
-            "role_name": "cloud-report-api"
-        },
-        {
-            "account_id": "987654321098",
-            "role_name": "RoleForAccount987"
-        }
-    ]
-}
+[
+    {
+        "account_id": "767397811981",
+        "role_name": "cloud-report-api"
+    }
+]
