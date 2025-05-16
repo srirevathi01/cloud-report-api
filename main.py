@@ -5,7 +5,6 @@ from middleware.region_middleware import DefaultRegionMiddleware
 import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from controllers.compute import router as compute_router
 from utils.response_formatter import format_response
 
 app = FastAPI(
