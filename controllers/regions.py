@@ -101,7 +101,7 @@ def fetch_regions_for_account(aws_account_id: str):
 # Fetch the count of services in each region for the given AWS account ID
 # Output: Will return the resource count for each region
 @router.get("/{aws_account_id}/resources")
-def get_service_count_by_region(aws_account_id: str):
+def get_service_count_of_all_region(aws_account_id: str):
     """
     Fetch the count of services in each region for the given AWS account ID.
     """
@@ -125,7 +125,34 @@ def get_service_count_by_region(aws_account_id: str):
             status_message=str(e),
             data={}
         )
-def fetch_service_count_by_region(aws_account_id: str):
+    
+@router.get("/{aws_account_id}/resources/{aws_region}")
+def get_service_count_by_region(aws_account_id: str, aws_region:str):
+    """
+    Fetch the count of services in each region for the given AWS account ID.
+    """
+    try:
+        # Fetch the service count using the helper function
+        service_count = fetch_service_count_by_region(aws_account_id, aws_region)
+        
+        # Use the common response formatter
+        return format_response(
+            status_code=200,
+            status_message='Successfully fetched the service count by region',
+            data={
+                "aws_account_id": aws_account_id,
+                "service_count": service_count
+            }
+        )
+    except Exception as e:
+        # Use the common response formatter for errors
+        return format_response(
+            status_code=500,
+            status_message=str(e),
+            data={}
+        )
+
+def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
     """
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
@@ -164,10 +191,13 @@ def fetch_service_count_by_region(aws_account_id: str):
 
 
         view_arn='arn:aws:resource-explorer-2:us-east-1:729047448122:view/all-resources/402c2bfd-ee19-4ddd-9d58-d7b47ee6a12c'
+        query_string='*'
+        if resource_region:
+            query_string='region:{}'.format(resource_region)
 
         paginator = rex_client.get_paginator('search')
         region_summary = defaultdict(lambda: defaultdict(int))
-        for page in paginator.paginate(ViewArn=view_arn, QueryString="*", MaxResults=50):
+        for page in paginator.paginate(ViewArn=view_arn, QueryString=query_string, MaxResults=50):
             for resource in page.get('Resources', []):
                 region = resource.get('Region', 'unknown')
                 type_full = resource.get('ResourceType', 'unknown')  # e.g., "AWS::EC2::Instance"
