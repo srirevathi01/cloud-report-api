@@ -16,6 +16,7 @@ def get_regions(aws_account_id: str):
     Fetch active and inactive regions for the given AWS account ID.
     """
     try:
+        print('Coming here')
         # Fetch active and inactive regions using the helper function
         regions = fetch_regions_for_account(aws_account_id)
         
@@ -44,7 +45,7 @@ def fetch_regions_for_account(aws_account_id: str):
     try:
         # Fetch the role name from the config file
         role_name = None
-        for account in config["accounts"]:
+        for account in config:
             if account["account_id"] == aws_account_id:
                 role_name = account["role_name"]
                 break

@@ -1,16 +1,15 @@
 from typing import Union
 import json
+import sys
+import traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from controllers.compute import router as compute_router
 from controllers.regions import router as regions_router
 from utils.response_formatter import format_response
 
-app = FastAPI()
 
-# Load the config file
-with open("config.json", "r") as config_file:
-    config = json.load(config_file)
+app = FastAPI(debug=True)
 
 # Load the config file
 with open("config.json", "r") as config_file:
@@ -61,6 +60,11 @@ async def global_response_formatter(request: Request, call_next):
         # Return the original response if it's not JSON
         return response
     except Exception as e:
+        exc_type, exc_value, exc_tb = sys.exc_info()
+        tb = traceback.extract_tb(exc_tb)
+        for frame in tb:
+            print(f"File: {frame.filename}, Line: {frame.lineno}, Function: {frame.name}")
+        print(f"Exception: {e}")
         # Handle exceptions and format the error response
         return JSONResponse(
             content=format_response(
@@ -75,7 +79,8 @@ def validate_account_id(aws_account_id: str) -> bool:
     """
     Validate the AWS account ID against the config file.
     """
-    for account in config["accounts"]:
+    for account in config:
+        print(account)
         if account["account_id"] == aws_account_id:
             return True
     return False
