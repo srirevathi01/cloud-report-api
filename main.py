@@ -1,11 +1,33 @@
-from typing import Union
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from middleware.aws_middleware import AWSRoleMiddleware
+from middleware.region_middleware import DefaultRegionMiddleware
 import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from controllers.compute import router as compute_router
 from utils.response_formatter import format_response
 
-app = FastAPI()
+app = FastAPI(
+    title="AWS Authentication Services API",
+    description="Authentication",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Role authentication middlewares
+app.add_middleware(AWSRoleMiddleware)
+
+# Default region middleware
+app.add_middleware(DefaultRegionMiddleware)
 
 @app.middleware("http")
 async def global_response_formatter(request: Request, call_next):
@@ -46,6 +68,12 @@ async def global_response_formatter(request: Request, call_next):
 @app.get("/")
 def welcome_message():
     return {"Hello": ["hello", "world"]}
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
 
 # Include the compute router
 app.include_router(compute_router)
