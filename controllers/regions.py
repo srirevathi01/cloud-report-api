@@ -196,15 +196,27 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
             query_string='region:{}'.format(resource_region)
 
         paginator = rex_client.get_paginator('search')
-        region_summary = defaultdict(lambda: defaultdict(int))
+        region_summary = defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: {"count": 0, "resources": []}
+                )
+            )
+        )
+
         for page in paginator.paginate(ViewArn=view_arn, QueryString=query_string, MaxResults=50):
             for resource in page.get('Resources', []):
+                print(resource)
+                # {'Arn': 'arn:aws:rds:ap-south-1:729047448122:pg:knackforge', 'LastReportedAt': datetime.datetime(2025, 5, 17, 12, 54, 46, tzinfo=tzutc()), 'OwningAccountId': '729047448122', 'Properties': [], 'Region': 'ap-south-1', 'ResourceType': 'rds:pg', 'Service': 'rds'}
                 region = resource.get('Region', 'unknown')
                 type_full = resource.get('ResourceType', 'unknown')  # e.g., "AWS::EC2::Instance"
-                service = type_full.split("::")[1].lower() if "::" in type_full else type_full.lower()
+                service = resource.get('Service', 'unknown')
+                resource_name = resource.get('Arn', 'unknown')
 
-                region_summary[region][service] += 1
-                region_summary[region]['total'] += 1
+
+                region_summary[region][service][type_full]['count'] += 1
+                region_summary[region][service][type_full]["resources"].append(resource_name)
+                # region_summary[region]['total'][type_full]['count'] += 1
         
         return region_summary
 
