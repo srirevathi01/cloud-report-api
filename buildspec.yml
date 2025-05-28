@@ -8,6 +8,7 @@ phases:
       - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 047471737790.dkr.ecr.ap-south-1.amazonaws.com
       - COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=$COMMIT_ID
+      - echo $IMAGE_TAG
       - IMAGE_URI=047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:$IMAGE_TAG
   build:
     commands:
