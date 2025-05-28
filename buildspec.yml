@@ -11,11 +11,11 @@ phases:
     commands:
       - echo Building the Docker image...
       - docker build -t $IMAGE_TAG .
-      - docker tag $IMAGE_TAG 047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:$IMAGE_TAG
+      - docker tag $IMAGE_TAG 047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:latest
   post_build:
     commands:
       - echo Pushing Docker images...
-      - docker push 047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:$IMAGE_TAG
+      - docker push 047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:latest
       # - docker push 047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloudreport-api:latest
       - echo Writing image definitions file...
       - |
