@@ -75,4 +75,4 @@ async def health_check():
     return {"status": "healthy"}
 
 # Include the compute router
-app.include_router(compute_router)
+# app.include_router(compute_router)
