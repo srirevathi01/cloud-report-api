@@ -5,6 +5,7 @@ from middleware.region_middleware import DefaultRegionMiddleware
 import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from controllers.compute_controller import router as compute_router
 from utils.response_formatter import format_response
 
 app = FastAPI(
@@ -75,4 +76,4 @@ async def health_check():
     return {"status": "healthy"}
 
 # Include the compute router
-# app.include_router(compute_router)
+app.include_router(compute_router)
