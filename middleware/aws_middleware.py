@@ -5,7 +5,7 @@ import json
 
 with open("config.json", "r") as config_file:
     config = json.load(config_file)
-    
+
 # Access the first element if config is a list
 if isinstance(config, list):
     config = config[0]
@@ -25,7 +25,6 @@ class AWSRoleMiddleware(BaseHTTPMiddleware):
 
         try:
             role_arn = f"arn:aws:iam::{aws_account_id}:role/{aws_role_name}"
-
             credentials = assume_role(role_arn, session_name="api-session")
             request.state.aws_credentials = credentials
         except Exception as e:
