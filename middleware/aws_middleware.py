@@ -15,7 +15,7 @@ aws_role_name = config.get("role_name")
 
 class AWSRoleMiddleware(BaseHTTPMiddleware):
     """
-    Middleware to validate AWS role and credentials for each request. This is a test comment.
+    Middleware to validate AWS role and credentials for each request.
     """
     async def dispatch(self, request: Request, call_next):
         if not aws_role_name:
