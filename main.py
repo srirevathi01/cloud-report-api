@@ -9,9 +9,9 @@ from controllers.compute_controller import router as compute_router
 from utils.response_formatter import format_response
 
 app = FastAPI(
-    title="AWS Authentication Services API",
-    description="Authentication",
-    version="1.0.0"
+    title="Cloud Report API",
+    description="API to fetch AWS resources",
+    version="1.0.2"
 )
 
 # Add CORS middleware
@@ -31,6 +31,10 @@ app.add_middleware(DefaultRegionMiddleware)
 
 @app.middleware("http")
 async def global_response_formatter(request: Request, call_next):
+    # Skip middleware for OpenAPI documentation paths
+    if request.url.path in ["/docs", "/redoc", "/openapi.json"]:
+        return await call_next(request)
+
     try:
         response = await call_next(request)
 

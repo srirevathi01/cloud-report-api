@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 import boto3
+from httpx import request
 
 router = APIRouter()
 
@@ -16,26 +17,15 @@ def list_compute_services():
     }
 
 @router.get("/compute/ec2/all")
-def list_ec2_instances():
+def list_ec2_instances(region: str = "us-east-1"):
     try:
-        # Initialize a session using Boto3
-        ec2_client = boto3.client("ec2")
-
-        # Retrieve all EC2 instances
-        # Get all available regions for EC2
-        regions = ["us-east-1"]
-        # capture region as param
         response = {"Reservations": []}
-        for region in regions:
-            # Create a regional EC2 client
-            regional_ec2_client = boto3.client("ec2", region_name=region)
-            # Retrieve instances in the region
-            regional_response = regional_ec2_client.describe_instances()
-            response["Reservations"].extend(regional_response["Reservations"])
+        # Create a regional EC2 client
+        ec2_client = boto3.client("ec2", region_name=region)
+        # Retrieve instances in the region
+        regional_response = ec2_client.describe_instances()
+        response["Reservations"].extend(regional_response["Reservations"])
 
-        # Extract instance details
-
-        #TODO: add region
         instances = []
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
