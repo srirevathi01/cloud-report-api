@@ -1,17 +1,32 @@
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from utils.response_formatter import format_response  # Import the response formatter
 import json
+
 from collections import defaultdict
 
-# Load the config file
-with open("config.json", "r") as config_file:
-    config = json.load(config_file)
+# Load the config file with error handling and absolute path
+import os
+config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+
+print(config_path)
+try:
+    with open(config_path, "r") as config_file:
+        config = json.load(config_file)
+        print(config)
+except Exception as e:
+    print(f"Error loading config.json from {config_path}: {e}")
+    config = []
 
 router = APIRouter()
 
-@router.get("/{aws_account_id}/regions")
+@router.get(
+    "/{aws_account_id}/regions",
+    tags=["regions"],
+    summary="Fetch active and inactive regions for the given AWS account ID"
+)
 def get_regions(aws_account_id: str):
     """
     Fetch active and inactive regions for the given AWS account ID.
@@ -44,6 +59,7 @@ def fetch_regions_for_account(aws_account_id: str):
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
     try:
+        print(f"[DEBUG] config in fetch_regions_for_account: {config}")
         # Fetch the role name from the config file
         role_name = None
         for account in config:
@@ -53,6 +69,16 @@ def fetch_regions_for_account(aws_account_id: str):
 
         if not role_name:
             raise Exception(f"No role found for AWS account ID: {aws_account_id}")
+        
+
+        resource_explorer_view_arn = None
+        for account in config:
+            if account["account_id"] == aws_account_id:
+                resource_explorer_view_arn = account["resource_explorer_view_arn"]
+                break
+
+        if not resource_explorer_view_arn:
+            raise Exception(f"Create resource explorer view for AWS account ID: {aws_account_id}")
 
         # Define the role ARN and session name
         role_arn = f"arn:aws:iam::{aws_account_id}:role/{role_name}"
@@ -100,7 +126,11 @@ def fetch_regions_for_account(aws_account_id: str):
     
 # Fetch the count of services in each region for the given AWS account ID
 # Output: Will return the resource count for each region
-@router.get("/{aws_account_id}/resources")
+@router.get(
+    "/{aws_account_id}/resources",
+    tags=["regions"],
+    summary="Fetch the count of services in each region for the given AWS account ID"
+)
 def get_service_count_of_all_region(aws_account_id: str):
     """
     Fetch the count of services in each region for the given AWS account ID.
@@ -126,8 +156,12 @@ def get_service_count_of_all_region(aws_account_id: str):
             data={}
         )
     
-@router.get("/{aws_account_id}/resources/{aws_region}")
-def get_service_count_by_region(aws_account_id: str, aws_region:str):
+@router.get(
+    "/{aws_account_id}/resources/{aws_region}",
+    tags=["regions"],
+    summary="Fetch the count of services in a specific region for the given AWS account ID"
+)
+def get_service_count_by_region(aws_account_id: str, aws_region: str):
     """
     Fetch the count of services in each region for the given AWS account ID.
     """
@@ -157,6 +191,7 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
     try:
+        print(f"[DEBUG] config in fetch_service_count_by_region: {config}")
         # Fetch the role name from the config file
         role_name = None
         for account in config:
@@ -166,6 +201,16 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
 
         if not role_name:
             raise Exception(f"No role found for AWS account ID: {aws_account_id}")
+        
+
+        resource_explorer_view_arn = None
+        for account in config:
+            if account["account_id"] == aws_account_id:
+                resource_explorer_view_arn = account["resource_explorer_view_arn"]
+                break
+
+        if not resource_explorer_view_arn:
+            raise Exception(f"Create resource explorer view for AWS account ID: {aws_account_id}")
 
         # Define the role ARN and session name
         role_arn = f"arn:aws:iam::{aws_account_id}:role/{role_name}"
@@ -184,13 +229,14 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
         # Create an Resource explorer client using the assumed role credentials
         rex_client = boto3.client(
             "resource-explorer-2",
+            region_name='us-east-1',
             aws_access_key_id=credentials["AccessKeyId"],
             aws_secret_access_key=credentials["SecretAccessKey"],
             aws_session_token=credentials["SessionToken"]
         )
 
 
-        view_arn='arn:aws:resource-explorer-2:us-east-1:729047448122:view/all-resources/402c2bfd-ee19-4ddd-9d58-d7b47ee6a12c'
+        # view_arn='arn:aws:resource-explorer-2:us-east-1:729047448122:view/all-resources/402c2bfd-ee19-4ddd-9d58-d7b47ee6a12c'
         query_string='*'
         if resource_region:
             query_string='region:{}'.format(resource_region)
@@ -204,7 +250,11 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
             )
         )
 
-        for page in paginator.paginate(ViewArn=view_arn, QueryString=query_string, MaxResults=50):
+        print('region_summary:', region_summary)  # Debugging output
+        region = rex_client.meta.region_name
+        print("Resource Explorer client region:", region)
+        for page in paginator.paginate(ViewArn=resource_explorer_view_arn, QueryString=query_string, MaxResults=50):
+            print(page)  # Debugging output to see the structure of the page
             for resource in page.get('Resources', []):
                 print(resource)
                 # {'Arn': 'arn:aws:rds:ap-south-1:729047448122:pg:knackforge', 'LastReportedAt': datetime.datetime(2025, 5, 17, 12, 54, 46, tzinfo=tzutc()), 'OwningAccountId': '729047448122', 'Properties': [], 'Region': 'ap-south-1', 'ResourceType': 'rds:pg', 'Service': 'rds'}

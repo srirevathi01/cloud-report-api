@@ -8,7 +8,20 @@ import traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from controllers.compute_controller import router as compute_router
+from controllers.regions_controller import router as regions_router
 from utils.response_formatter import format_response
+
+# Load the config file with error handling and absolute path
+import os
+config_path = os.path.join(os.path.dirname(__file__),'config.json')
+
+try:
+    with open(config_path, "r") as config_file:
+        config = json.load(config_file)
+        print(config)
+except Exception as e:
+    print(f"Error loading config.json from {config_path}: {e}")
+    config = []
 
 app = FastAPI(
     title="AWS Authentication Services API",
@@ -91,12 +104,12 @@ async def global_response_formatter(request: Request, call_next):
             status_code=500
         )
 
+# Valiudate AWS account ID against the config file
 def validate_account_id(aws_account_id: str) -> bool:
     """
     Validate the AWS account ID against the config file.
     """
     for account in config:
-        print(account)
         if account["account_id"] == aws_account_id:
             return True
     return False
