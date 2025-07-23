@@ -24,7 +24,6 @@ router = APIRouter()
 
 @router.get(
     "/{aws_account_id}/regions",
-    tags=["regions"],
     summary="Fetch active and inactive regions for the given AWS account ID"
 )
 def get_regions(aws_account_id: str):
@@ -128,7 +127,6 @@ def fetch_regions_for_account(aws_account_id: str):
 # Output: Will return the resource count for each region
 @router.get(
     "/{aws_account_id}/resources",
-    tags=["regions"],
     summary="Fetch the count of services in each region for the given AWS account ID"
 )
 def get_service_count_of_all_region(aws_account_id: str):
@@ -158,7 +156,6 @@ def get_service_count_of_all_region(aws_account_id: str):
     
 @router.get(
     "/{aws_account_id}/resources/{aws_region}",
-    tags=["regions"],
     summary="Fetch the count of services in a specific region for the given AWS account ID"
 )
 def get_service_count_by_region(aws_account_id: str, aws_region: str):
