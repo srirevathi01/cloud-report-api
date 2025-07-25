@@ -34,7 +34,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(healthcheck_router, tags=["healthcheck"])
-app.include_router(compute_router)
+app.include_router(compute_router, prefix="/api", tags=["compute"])
 app.include_router(regions_router, prefix="/api", tags=["regions"])
 
 # Add custom global middleware after CORS

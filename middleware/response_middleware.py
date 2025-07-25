@@ -28,6 +28,8 @@ def validate_account_id(aws_account_id: str) -> bool:
 class GlobalResponseFormatterMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
+            if request.url.path == "/openapi.json":
+                return await call_next(request)
             aws_account_id = None
             if "/api/" in request.url.path:
                 path_parts = request.url.path.split("/")
