@@ -54,13 +54,13 @@ def get_regions(aws_account_id: str, request: Request):
     "/{aws_account_id}/resources",
     summary="Fetch the count of services in each region for the given AWS account ID"
 )
-def get_service_count_of_all_region(aws_account_id: str):
+def get_service_count_of_all_region(aws_account_id: str, request: Request):
     """
     Fetch the count of services in each region for the given AWS account ID.
     """
     try:
         # Fetch the service count using the helper function
-        service_count = fetch_service_count_by_region(aws_account_id)
+        service_count = fetch_service_count_by_region(aws_account_id, '', request.state.aws_credentials)
         
         # Use the common response formatter
         return {
@@ -75,13 +75,13 @@ def get_service_count_of_all_region(aws_account_id: str):
     "/{aws_account_id}/resources/{aws_region}",
     summary="Fetch the count of services in a specific region for the given AWS account ID"
 )
-def get_service_count_by_region(aws_account_id: str, aws_region: str):
+def get_service_count_by_region(aws_account_id: str, aws_region: str, request: Request):
     """
     Fetch the count of services in each region for the given AWS account ID.
     """
     try:
         # Fetch the service count using the helper function
-        service_count = fetch_service_count_by_region(aws_account_id, aws_region)
+        service_count = fetch_service_count_by_region(aws_account_id, aws_region, request.state.aws_credentials)
         
         # Use the common response formatter
         return {
@@ -96,7 +96,7 @@ def get_service_count_by_region(aws_account_id: str, aws_region: str):
             data={}
         )
 
-def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
+def fetch_service_count_by_region(aws_account_id: str, resource_region='', credentials=None):
     """
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
@@ -120,20 +120,6 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
 
         if not resource_explorer_view_arn:
             raise Exception(f"Create resource explorer view for AWS account ID: {aws_account_id}")
-
-        # Define the role ARN and session name
-        role_arn = f"arn:aws:iam::{aws_account_id}:role/{role_name}"
-        session_name = "fetchRegionsSession"
-
-        # Assume the role
-        sts_client = boto3.client("sts")
-        assumed_role = sts_client.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=session_name
-        )
-
-        # Extract temporary credentials
-        credentials = assumed_role["Credentials"]
 
         # Create an Resource explorer client using the assumed role credentials
         rex_client = boto3.client(
