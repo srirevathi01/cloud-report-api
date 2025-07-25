@@ -18,8 +18,8 @@ allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",
 
 # Initialize app
 app = FastAPI(
-    title="AWS Authentication Services API",
-    description="Authentication",
+    title="Cloud Report API",
+    description="API to fetch cloud resources and reports",
     version="1.0.0"
 )
 
