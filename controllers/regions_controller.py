@@ -67,11 +67,7 @@ def get_service_count_of_all_region(aws_account_id: str):
         }
     except Exception as e:
         # Use the common response formatter for errors
-        return format_response(
-            status_code=500,
-            status_message=str(e),
-            data={}
-        )
+        raise Exception(f"Failed to get resource count in region: {str(e)}")
     
 @router.get(
     "/{aws_account_id}/resources/{aws_region}",
