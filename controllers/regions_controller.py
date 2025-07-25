@@ -11,11 +11,9 @@ from collections import defaultdict
 import os
 config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
 
-print(config_path)
 try:
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
-        print(config)
 except Exception as e:
     print(f"Error loading config.json from {config_path}: {e}")
     config = []
@@ -31,7 +29,6 @@ def get_regions(aws_account_id: str):
     Fetch active and inactive regions for the given AWS account ID.
     """
     try:
-        print('Coming here')
         # Fetch active and inactive regions using the helper function
         regions = fetch_regions_for_account(aws_account_id)
         
@@ -106,7 +103,6 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
     try:
-        print(f"[DEBUG] config in fetch_service_count_by_region: {config}")
         # Fetch the role name from the config file
         role_name = None
         for account in config:
@@ -164,13 +160,9 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region=''):
             )
         )
 
-        print('region_summary:', region_summary)  # Debugging output
         region = rex_client.meta.region_name
-        print("Resource Explorer client region:", region)
         for page in paginator.paginate(ViewArn=resource_explorer_view_arn, QueryString=query_string, MaxResults=50):
-            print(page)  # Debugging output to see the structure of the page
             for resource in page.get('Resources', []):
-                print(resource)
                 # {'Arn': 'arn:aws:rds:ap-south-1:729047448122:pg:knackforge', 'LastReportedAt': datetime.datetime(2025, 5, 17, 12, 54, 46, tzinfo=tzutc()), 'OwningAccountId': '729047448122', 'Properties': [], 'Region': 'ap-south-1', 'ResourceType': 'rds:pg', 'Service': 'rds'}
                 region = resource.get('Region', 'unknown')
                 type_full = resource.get('ResourceType', 'unknown')  # e.g., "AWS::EC2::Instance"
@@ -192,7 +184,6 @@ def fetch_regions_for_account(aws_account_id: str):
     Fetch active and inactive regions for an AWS account using an IAM STS role.
     """
     try:
-        print(f"[DEBUG] config in fetch_regions_for_account: {config}")
         # Fetch the role name from the config file
         role_name = None
         for account in config:
