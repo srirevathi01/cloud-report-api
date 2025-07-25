@@ -39,11 +39,13 @@ def get_regions(aws_account_id: str, request: Request):
                 "inactive_regions": regions["inactive_regions"]
             }
     except Exception as e:
-        # Use the common response formatter for errors
+        import traceback
+        tb_str = traceback.format_exc()
+        # Use the common response formatter for errors, including stacktrace
         return format_response(
             status_code=500,
             status_message=str(e),
-            data={}
+            data={"traceback": tb_str}
         )
     
 # Fetch the count of services in each region for the given AWS account ID
