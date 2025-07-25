@@ -33,7 +33,6 @@ class GlobalResponseFormatterMiddleware(BaseHTTPMiddleware):
             aws_account_id = None
             if "/api/" in request.url.path:
                 path_parts = request.url.path.split("/")
-                print(f"Path parts: {path_parts}")
                 if len(path_parts) > 2:
                     aws_account_id = path_parts[2]
             
