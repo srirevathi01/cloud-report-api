@@ -206,6 +206,7 @@ def fetch_regions_for_account(aws_account_id: str, credentials):
         # Create an EC2 client using the assumed role credentials
         ec2_client = boto3.client(
             "ec2",
+            region_name='us-east-1',
             aws_access_key_id=credentials["AccessKeyId"],
             aws_secret_access_key=credentials["SecretAccessKey"],
             aws_session_token=credentials["SessionToken"]
