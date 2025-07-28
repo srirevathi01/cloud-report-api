@@ -6,6 +6,10 @@ from utils.response_formatter import format_response
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from utils.aws_auth import assume_role
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Load the config file with error handling and absolute path
 config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
@@ -25,27 +29,53 @@ def validate_account_id(aws_account_id: str) -> bool:
 
 
 # Define class-based middleware
-class GlobalResponseFormatterMiddleware(BaseHTTPMiddleware):
+class GlobalMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
-            if request.url.path == "/openapi.json":
+            if request.url.path in ["/docs", "/favicon", "/openapi.json"]:
                 return await call_next(request)
+
             aws_account_id = None
             if "/api/" in request.url.path:
-                path_parts = request.url.path.split("/")
-                if len(path_parts) > 2:
-                    aws_account_id = path_parts[2]
-            
-            if aws_account_id and not validate_account_id(aws_account_id):
+                query_params = request.query_params._dict.copy()
+                if "region" not in query_params or not query_params["region"]:
+                    query_params["region"] = "us-east-1"
+                    logger.info("Region not specified. Defaulting to 'us-east-1'.")
+
+                request.scope["query_string"] = "&".join(
+                    f"{key}={value}" for key, value in query_params.items()
+                ).encode("utf-8")
+
+                #  check if the query paramater "account_id" is present
+                if "account_id" in request.query_params:
+                    aws_account_id = request.query_params["account_id"]
+            logger.info(f"Request path: {request.url.path}, AWS Account ID: {aws_account_id}, Validate ID: {validate_account_id(aws_account_id)}")
+
+            # Validate AWS account ID if provided
+            if aws_account_id is None and not validate_account_id(aws_account_id):
                 return JSONResponse(
                     content=format_response(
                         status_code="403",
                         status_message="Forbidden",
-                        data={"error": "Invalid AWS account ID"}
+                        data={"error": "Invalid AWS account ID or not provided."}
                     ),
                     status_code=403
                 )
 
+            aws_role_name = get_role_name_from_config(aws_account_id)
+            if aws_role_name is None:
+                return JSONResponse(
+                    content=format_response(
+                        status_code="403",
+                        status_message="Forbidden",
+                        data={"error": f"No role name found for AWS Account ID: {aws_account_id}"}
+                    ),
+                    status_code=403
+                )
+
+            role_arn = f"arn:aws:iam::{aws_account_id}:role/{aws_role_name}"
+            credentials = assume_role(role_arn, session_name="api-session")
+            request.state.aws_credentials = credentials
             response = await call_next(request)
 
             if response.status_code == 200 and "application/json" in response.headers.get("content-type", ""):
@@ -79,8 +109,21 @@ class GlobalResponseFormatterMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 content=format_response(
                     status_code="500",
-                    status_message="Internal Server Error",
+                    status_message="Internal Server Errdddor",
                     data={"error": str(e)}
                 ),
                 status_code=500
             )
+
+
+def get_role_name_from_config(aws_account_id):
+    """
+    Function to get the AWS role name from the config.
+    """
+    aws_role_name = None
+    with open("config.json", "r") as config_file:
+        config = json.load(config_file)
+    for account in config:
+        if account["account_id"] == aws_account_id:
+            aws_role_name = account["role_name"]
+    return aws_role_name

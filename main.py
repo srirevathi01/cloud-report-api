@@ -3,9 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 
 # Import custom middleware
-from middleware.aws_middleware import AWSRoleMiddleware
-from middleware.region_middleware import DefaultRegionMiddleware
-from middleware.response_middleware import GlobalResponseFormatterMiddleware
+from middleware.global_middleware import GlobalMiddleware
 
 
 # Import routers
@@ -38,6 +36,4 @@ app.include_router(compute_router, prefix="/api", tags=["compute"])
 app.include_router(regions_router, prefix="/api", tags=["regions"])
 
 # Add custom global middleware after CORS
-app.add_middleware(GlobalResponseFormatterMiddleware)
-app.add_middleware(AWSRoleMiddleware)
-app.add_middleware(DefaultRegionMiddleware)
+app.add_middleware(GlobalMiddleware)
