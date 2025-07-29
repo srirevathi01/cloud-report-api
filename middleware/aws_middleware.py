@@ -21,15 +21,8 @@ except Exception as e:
     config = []
 
 
-def validate_account_id(aws_account_id: str) -> bool:
-    for account in config:
-        if account["account_id"] == aws_account_id:
-            return True
-    return False
-
-
 # Define class-based middleware
-class GlobalMiddleware(BaseHTTPMiddleware):
+class AWSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
             if request.url.path in ["/docs", "/favicon", "/openapi.json"]:
@@ -114,6 +107,12 @@ class GlobalMiddleware(BaseHTTPMiddleware):
                 ),
                 status_code=500
             )
+
+def validate_account_id(aws_account_id: str) -> bool:
+    for account in config:
+        if account["account_id"] == aws_account_id:
+            return True
+    return False
 
 
 def get_role_name_from_config(aws_account_id):
