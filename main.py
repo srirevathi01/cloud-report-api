@@ -9,6 +9,7 @@ from middleware.aws_middleware import AWSMiddleware
 # Import routers
 from controllers.healthcheck_controller import router as healthcheck_router
 from controllers.compute_controller import router as compute_router
+from controllers.computev3_controller import router as compute_router
 from controllers.regions_controller import router as regions_router
 
 # This is a list of allowed origins for CORS
