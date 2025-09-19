@@ -3,40 +3,45 @@
 
 from fastapi import APIRouter, Query , HTTPException, Request
 import boto3
+from pydantic import BaseModel
 from botocore.exceptions import BotoCoreError, ClientError
 
 router = APIRouter()
 
-#creating the client/service to be loaded
-
+class ResourceIds(BaseModel):
+    ids: list[str] 
+    
+#To list all databases
 @router.get("/databases")
 def list_database_services( request: Request, account_id: str = Query(None)):
     
     return {
         "RDS/AURORA",
-        "Dynamodb",
+        "dynamodb",
         "elasticache"
     }
+    
+ #For a specific database service
     
 @router.get("/databases/{service_name}/list")
 def list_service_resources(
     service_name: str,
     request: Request,
-    account_id: str = Query(None)
+    account_id: str = Query(None), region : str ="us-east-1"
 ):
-    """
-    List resources for a specific service: rds, dynamodb, or elasticache
-    """
+   
     try:
         # Temporary credentials from middleware
         creds = request.state.aws_credentials
 
+        #for RDS
         if service_name == "rds":
             rds = boto3.client(
                 "rds",
                 aws_access_key_id=creds["AccessKeyId"],
                 aws_secret_access_key=creds["SecretAccessKey"],
                 aws_session_token=creds["SessionToken"],
+                region_name = region,
             )
             instances = rds.describe_db_instances()["DBInstances"]
             return {
@@ -51,13 +56,14 @@ def list_service_resources(
                 ],
                 "total": len(instances)
             }
-
+        #for dynamodb
         elif service_name == "dynamodb":
             dynamodb = boto3.client(
                 "dynamodb",
                 aws_access_key_id=creds["AccessKeyId"],
                 aws_secret_access_key=creds["SecretAccessKey"],
                 aws_session_token=creds["SessionToken"],
+                region_name = region,
             )
             tables = dynamodb.list_tables()["TableNames"]
             return {
@@ -66,12 +72,14 @@ def list_service_resources(
                 "total": len(tables)
             }
 
+        #for elasticache
         elif service_name == "elasticache":
             elasticache = boto3.client(
                 "elasticache",
                 aws_access_key_id=creds["AccessKeyId"],
                 aws_secret_access_key=creds["SecretAccessKey"],
                 aws_session_token=creds["SessionToken"],
+                region_name = region,
             )
             clusters = elasticache.describe_cache_clusters()["CacheClusters"]
             return {
@@ -95,3 +103,81 @@ def list_service_resources(
 
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+#POST/ for specific file
+
+@router.post("/databases/{service_name}")
+def describe_specific_resources(
+    service_name: str,
+    request: Request,
+    resource_ids: ResourceIds,      
+    account_id: str = Query(None),
+    region: str = "us-east-1",
+):
+    
+    try:
+        creds = request.state.aws_credentials
+
+        if service_name == "rds":
+            rds = boto3.client(
+                "rds",
+                aws_access_key_id=creds["AccessKeyId"],
+                aws_secret_access_key=creds["SecretAccessKey"],
+                aws_session_token=creds["SessionToken"],
+                region_name=region,
+            )
+            details = rds.describe_db_instances(
+                DBInstanceIdentifier=resource_ids.ids[0]
+            ) if len(resource_ids.ids) == 1 else rds.describe_db_instances(
+                Filters=[{"Name": "db-instance-id", "Values": resource_ids.ids}]
+            )
+            return {"service": "RDS/Aurora", "resources": details["DBInstances"]}
+
+        elif service_name == "dynamodb":
+            dynamodb = boto3.client(
+        "dynamodb",
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+        region_name=region,
+        )
+            
+            tables_info = []
+            for t in resource_ids.ids:
+                t_desc = dynamodb.describe_table(TableName=t)["Table"]
+                tables_info.append({
+                    "TableName": t_desc["TableName"],
+                    "Status": t_desc["TableStatus"], 
+                    "SizeBytes": t_desc["TableSizeBytes"],
+                    "ItemCount": t_desc["ItemCount"] 
+                     })
+                
+            return {"service": "DynamoDB", "resources": tables_info}
+        
+
+        elif service_name == "elasticache":
+            elasticache = boto3.client(
+                "elasticache",
+                aws_access_key_id=creds["AccessKeyId"],
+                aws_secret_access_key=creds["SecretAccessKey"],
+                aws_session_token=creds["SessionToken"],
+                region_name=region,
+            )
+            clusters_info = []
+            for cid in resource_ids.ids:
+                clusters_info.append(
+                    elasticache.describe_cache_clusters(
+                        CacheClusterId=cid, ShowCacheNodeInfo=True
+                    )["CacheClusters"][0]
+                )
+            return {"service": "ElastiCache", "resources": clusters_info}
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Supported services: rds, dynamodb, elasticache",
+            )
+    except (BotoCoreError, ClientError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
