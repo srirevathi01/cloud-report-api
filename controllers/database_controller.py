@@ -1,5 +1,4 @@
-#listing database on the us-east-1
-
+#listing databases using API
 
 from fastapi import APIRouter, Query , HTTPException, Request
 import boto3
@@ -19,9 +18,9 @@ def list_database_services( request: Request, account_id: str = Query(None)):
         "RDS/AURORA",
         "dynamodb",
         "elasticache"
-    }
+        }
     
- #For a specific database service
+#For a specific database service (rds/aurora,dynamodb,elasticache)
     
 @router.get("/databases/{service_name}/list")
 def list_service_resources(
@@ -34,7 +33,7 @@ def list_service_resources(
         # Temporary credentials from middleware
         creds = request.state.aws_credentials
 
-        #for RDS
+        #to list RDS
         if service_name == "rds":
             rds = boto3.client(
                 "rds",
@@ -56,7 +55,8 @@ def list_service_resources(
                 ],
                 "total": len(instances)
             }
-        #for dynamodb
+            
+        #to list dynamodb
         elif service_name == "dynamodb":
             dynamodb = boto3.client(
                 "dynamodb",
@@ -72,7 +72,7 @@ def list_service_resources(
                 "total": len(tables)
             }
 
-        #for elasticache
+        #to list elasticache
         elif service_name == "elasticache":
             elasticache = boto3.client(
                 "elasticache",
@@ -105,7 +105,7 @@ def list_service_resources(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-#POST/ for specific file
+#POST/ to list exact data details
 
 @router.post("/databases/{service_name}")
 def describe_specific_resources(
@@ -164,6 +164,7 @@ def describe_specific_resources(
                 aws_session_token=creds["SessionToken"],
                 region_name=region,
             )
+            
             clusters_info = []
             for cid in resource_ids.ids:
                 clusters_info.append(
@@ -171,6 +172,7 @@ def describe_specific_resources(
                         CacheClusterId=cid, ShowCacheNodeInfo=True
                     )["CacheClusters"][0]
                 )
+                
             return {"service": "ElastiCache", "resources": clusters_info}
 
         else:
@@ -178,6 +180,7 @@ def describe_specific_resources(
                 status_code=400,
                 detail="Supported services: rds, dynamodb, elasticache",
             )
+            
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=500, detail=str(e))
     
