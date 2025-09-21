@@ -6,22 +6,22 @@ from botocore.exceptions import ClientError
 router = APIRouter()
 
 @router.get("/storage")
-def list_storage(service: Optional[str] = Query(None), region: Optional[str] = Query("us-east-1")):
+def list_storage(request: Request, service: Optional[str] = Query(None), region: Optional[str] = Query("us-east-1")):
     services = {}
-    
+    session = request.state.session
     if service == "s3" or service is None:
-        services["s3"] = list_s3_buckets(region)
+        services["s3"] = list_s3_buckets(region, session)
     
     if service == "efs" or service is None:
-        services["efs"] = list_efs_file_systems(region)
+        services["efs"] = list_efs_file_systems(region, session)
     
     if service == "ebs" or service is None:
-        services["ebs"] = list_ebs_volumes(region)
+        services["ebs"] = list_ebs_volumes(region, session)
 
     return services
 
-def list_s3_buckets(region: str) -> List[str]:
-    s3 = boto3.client("s3")
+def list_s3_buckets(region: str, session) -> List[str]:
+    s3 = session.client("s3")
     result = []
     try:
         buckets = s3.list_buckets()
@@ -38,16 +38,16 @@ def list_s3_buckets(region: str) -> List[str]:
         return [f"Error listing S3 buckets: {str(e)}"]
     return result
 
-def list_efs_file_systems(region: str) -> List[str]:
-    efs = boto3.client('efs', region_name=region)
+def list_efs_file_systems(region: str, session) -> List[str]:
+    efs = session.client('efs', region_name=region)
     try:
         fs = efs.describe_file_systems()
         return [fs_item['FileSystemId'] for fs_item in fs['FileSystems']]
     except Exception as e:
         return [f"Error listing EFS: {str(e)}"]
 
-def list_ebs_volumes(region: str) -> List[Dict]:
-    ec2 = boto3.client('ec2', region_name=region)
+def list_ebs_volumes(region: str, session) -> List[Dict]:
+    ec2 = session.client('ec2', region_name=region)
     try:
         volumes = ec2.describe_volumes()
         return [
