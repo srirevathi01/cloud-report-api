@@ -31,7 +31,7 @@ def list_service_resources(
    
     try:
         # Temporary credentials from middleware
-        creds = request.state.aws_credentials
+        creds = Request.state.aws_credentials
 
         #to list RDS
         if service_name == "rds":
