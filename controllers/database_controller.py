@@ -20,8 +20,7 @@ def list_database_services( request: Request, account_id: str = Query(None)):
         "elasticache"
         }
     
-#For a specific database service (rds/aurora,dynamodb,elasticache)
-    
+#For a specific database service (rds/aurora,dynamodb,elasticache)    
 @router.get("/databases/{service_name}/list")
 def list_service_resources(
     service_name: str,
@@ -31,20 +30,17 @@ def list_service_resources(
    
     try:
         # Temporary credentials from middleware
-        creds = Request.state.aws_credentials
+        session = request.state.session
 
         #to list RDS
         if service_name == "rds":
-            rds = boto3.client(
+            rds = session.client(
                 "rds",
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
                 region_name = region,
             )
             instances = rds.describe_db_instances()["DBInstances"]
             return {
-                "service": "RDS/Aurora",
+                "service_name": "RDS/Aurora",
                 "instances": [
                     {
                         "DBInstanceIdentifier": db["DBInstanceIdentifier"],
@@ -58,32 +54,26 @@ def list_service_resources(
             
         #to list dynamodb
         elif service_name == "dynamodb":
-            dynamodb = boto3.client(
+            dynamodb = session.client(
                 "dynamodb",
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
-                region_name = region,
+                region_name=region,
             )
             tables = dynamodb.list_tables()["TableNames"]
             return {
-                "service": "DynamoDB",
-                "tables": tables,
+                "service_name": "DynamoDB",
+                "table": tables,
                 "total": len(tables)
             }
-
+            tables
         #to list elasticache
         elif service_name == "elasticache":
-            elasticache = boto3.client(
+            elasticache = session.client(
                 "elasticache",
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
-                region_name = region,
+                region_name=region,
             )
             clusters = elasticache.describe_cache_clusters()["CacheClusters"]
             return {
-                "service": "ElastiCache",
+                "service_name": "ElastiCache",
                 "clusters": [
                     {
                         "ClusterId": c["CacheClusterId"],
@@ -117,14 +107,10 @@ def describe_specific_resources(
 ):
     
     try:
-        creds = request.state.aws_credentials
-
+        session = request.state.session
         if service_name == "rds":
-            rds = boto3.client(
+            rds = session.client(
                 "rds",
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
                 region_name=region,
             )
             details = rds.describe_db_instances(
@@ -135,14 +121,11 @@ def describe_specific_resources(
             return {"service": "RDS/Aurora", "resources": details["DBInstances"]}
 
         elif service_name == "dynamodb":
-            dynamodb = boto3.client(
-        "dynamodb",
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"],
-        region_name=region,
-        )
-            
+            dynamodb = session.client(
+                "dynamodb",
+                region_name=region,
+            )
+
             tables_info = []
             for t in resource_ids.ids:
                 t_desc = dynamodb.describe_table(TableName=t)["Table"]
@@ -157,11 +140,8 @@ def describe_specific_resources(
         
 
         elif service_name == "elasticache":
-            elasticache = boto3.client(
+            elasticache = session.client(
                 "elasticache",
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
                 region_name=region,
             )
             
@@ -172,7 +152,6 @@ def describe_specific_resources(
                         CacheClusterId=cid, ShowCacheNodeInfo=True
                     )["CacheClusters"][0]
                 )
-                
             return {"service": "ElastiCache", "resources": clusters_info}
 
         else:
