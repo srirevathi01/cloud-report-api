@@ -25,11 +25,7 @@ except Exception as e:
 class AWSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
-<<<<<<< HEAD
-            if request.url.path in ["/docs", "/favicon", "/openapi.json"]:
-=======
             if request.url.path in ["/docs", "/favicon", "/openapi.json", "/health"]:
->>>>>>> prod
                 return await call_next(request)
 
             aws_account_id = None
