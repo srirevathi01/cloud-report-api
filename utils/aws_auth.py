@@ -17,7 +17,12 @@ def assume_role(role_arn: str, session_name: str) -> dict:
     try:
         # Check if credentials are cached
         if role_arn in TEMP_CREDENTIALS_CACHE:
-            return TEMP_CREDENTIALS_CACHE[role_arn]
+            session = boto3.Session(
+                aws_access_key_id=TEMP_CREDENTIALS_CACHE[role_arn]["AccessKeyId"],
+                aws_secret_access_key=TEMP_CREDENTIALS_CACHE[role_arn]["SecretAccessKey"],
+                aws_session_token=TEMP_CREDENTIALS_CACHE[role_arn]["SessionToken"],
+            )
+            return session
 
         sts_client = boto3.client('sts')
         response = sts_client.assume_role(
@@ -32,7 +37,12 @@ def assume_role(role_arn: str, session_name: str) -> dict:
             "SecretAccessKey": credentials['SecretAccessKey'],
             "SessionToken": credentials['SessionToken']
         }
-        return TEMP_CREDENTIALS_CACHE[role_arn]
+        session = boto3.Session(
+            aws_access_key_id=TEMP_CREDENTIALS_CACHE[role_arn]["AccessKeyId"],
+            aws_secret_access_key=TEMP_CREDENTIALS_CACHE[role_arn]["SecretAccessKey"],
+            aws_session_token=TEMP_CREDENTIALS_CACHE[role_arn]["SessionToken"],
+        )
+        return session
     except ClientError as e:
         logger.error(f"Failed to assume role: {e}")
         raise e
