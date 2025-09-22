@@ -25,7 +25,7 @@ except Exception as e:
 class AWSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
-            if request.url.path in ["/docs", "/favicon", "/openapi.json"]:
+            if request.url.path in ["/docs", "/favicon", "/openapi.json", "/health"]:
                 return await call_next(request)
 
             aws_account_id = None
@@ -67,8 +67,8 @@ class AWSMiddleware(BaseHTTPMiddleware):
                 )
 
             role_arn = f"arn:aws:iam::{aws_account_id}:role/{aws_role_name}"
-            credentials = assume_role(role_arn, session_name="api-session")
-            request.state.aws_credentials = credentials
+            boto3_session = assume_role(role_arn, session_name="api-session")
+            request.state.session = boto3_session
             response = await call_next(request)
 
             if response.status_code == 200 and "application/json" in response.headers.get("content-type", ""):
