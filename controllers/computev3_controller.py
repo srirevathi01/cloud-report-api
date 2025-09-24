@@ -10,13 +10,10 @@ class ResourceRequest(BaseModel):
     ids: list[str]
     region: str = "us-east-1"
 
-
 # --- 1. GET /computev3 ---
 @router.get("/computev3")
 def list_compute_services(request: Request):
-    """
-    List all compute services supported by the API.
-    """
+    """List all compute services supported by the API."""
     try:
         _ = request.state.session  # Ensure creds are injected
         services = ["ec2", "lambda", "ecs"]
@@ -24,13 +21,10 @@ def list_compute_services(request: Request):
     except Exception as e:
         return {"error": str(e)}
 
-
 # --- 2. GET /computev3/{service_name}/list ---
 @router.get("/computev3/{service_name}/list")
 def list_service_resources(service_name: str, request: Request, region: str = "us-east-1"):
-    """
-    List all resources under a specific compute service.
-    """
+    """List all resources under a specific compute service."""
     try:
         creds = request.state.session
         service_name = service_name.lower()
@@ -41,14 +35,27 @@ def list_service_resources(service_name: str, request: Request, region: str = "u
             instances = ec2_client.describe_instances()
             for reservation in instances["Reservations"]:
                 for instance in reservation["Instances"]:
-                    resources.append(instance["InstanceId"])
+                    resources.append({
+                        "InstanceId": instance["InstanceId"],
+                        "State": instance["State"]["Name"],
+                        "Type": instance["InstanceType"],
+                        "Family": instance["InstanceType"].split('.')[0],
+                        "LaunchTime": str(instance["LaunchTime"])
+                    })
 
         elif service_name == "lambda":
             lambda_client = creds.client("lambda", region_name=region)
             paginator = lambda_client.get_paginator("list_functions")
             for page in paginator.paginate():
                 for fn in page.get("Functions", []):
-                    resources.append(fn["FunctionName"])
+                    resources.append({
+                        "FunctionName": fn["FunctionName"],
+                        "Runtime": fn.get("Runtime"),
+                        "MemorySize": fn.get("MemorySize"),
+                        "Timeout": fn.get("Timeout"),
+                        "LastModified": fn.get("LastModified"),
+                        "State": fn.get("State", "Unknown")
+                    })
 
         elif service_name == "ecs":
             ecs_client = creds.client("ecs", region_name=region)
@@ -67,14 +74,10 @@ def list_service_resources(service_name: str, request: Request, region: str = "u
     except Exception as e:
         return {"error": str(e)}
 
-
 # --- 3. POST /computev3/{service_name} ---
 @router.post("/computev3/{service_name}")
 def describe_resources(service_name: str, request: Request, body: ResourceRequest):
-    """
-    Describe specific resources under a compute service.
-    Pass list of IDs in the request body.
-    """
+    """Describe specific resources under a compute service (EC2, Lambda, ECS)."""
     try:
         creds = request.state.session
         service_name = service_name.lower()
@@ -89,6 +92,7 @@ def describe_resources(service_name: str, request: Request, body: ResourceReques
                         "InstanceId": instance["InstanceId"],
                         "State": instance["State"]["Name"],
                         "Type": instance["InstanceType"],
+                        "Family": instance["InstanceType"].split('.')[0],
                         "LaunchTime": str(instance["LaunchTime"])
                     })
 
@@ -96,18 +100,20 @@ def describe_resources(service_name: str, request: Request, body: ResourceReques
             lambda_client = creds.client("lambda", region_name=body.region)
             for fn_name in body.ids:
                 fn = lambda_client.get_function(FunctionName=fn_name)
+                config = fn.get("Configuration", {})
                 details.append({
-                    "FunctionName": fn["Configuration"]["FunctionName"],
-                    "Runtime": fn["Configuration"]["Runtime"],
-                    "MemorySize": fn["Configuration"]["MemorySize"],
-                    "LastModified": fn["Configuration"]["LastModified"]
+                    "FunctionName": config.get("FunctionName"),
+                    "Runtime": config.get("Runtime"),
+                    "MemorySize": config.get("MemorySize"),
+                    "Timeout": config.get("Timeout"),
+                    "LastModified": config.get("LastModified"),
+                    "State": config.get("State", "Unknown")
                 })
 
         elif service_name == "ecs":
             ecs_client = creds.client("ecs", region_name=body.region)
 
             for cluster_name in body.ids:
-                # --- Cluster Details ---
                 cluster_resp = ecs_client.describe_clusters(clusters=[cluster_name])
                 for c in cluster_resp.get("clusters", []):
                     cluster_info = {
@@ -132,7 +138,6 @@ def describe_resources(service_name: str, request: Request, body: ResourceReques
                                 "Status": s["status"],
                                 "DesiredCount": s["desiredCount"],
                                 "RunningCount": s["runningCount"],
-                                "LaunchType": s.get("launchType", "UNKNOWN"),
                                 "Tasks": []
                             }
 
@@ -150,6 +155,12 @@ def describe_resources(service_name: str, request: Request, body: ResourceReques
                                         "LastStatus": t["lastStatus"],
                                         "DesiredStatus": t["desiredStatus"]
                                     })
+
+                                # Set service launch type based on first task (if exists)
+                                if service_info["Tasks"]:
+                                    service_info["LaunchType"] = service_info["Tasks"][0]["LaunchType"]
+                                else:
+                                    service_info["LaunchType"] = "UNKNOWN"
 
                             cluster_info["Services"].append(service_info)
 
