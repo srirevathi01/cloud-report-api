@@ -21,7 +21,7 @@ def list_database_services( request: Request, account_id: str = Query(None)):
         }
     
 #For a specific database service (rds/aurora,dynamodb,elasticache)    
-@router.get("/databases/{service_name}/list")
+@router.get("/databases/{service_name}")
 def list_service_resources(
     service_name: str,
     request: Request,

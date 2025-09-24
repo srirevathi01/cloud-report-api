@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Query, HTTPException
-import boto3
+#import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel
 
@@ -18,7 +18,8 @@ def list_networking_services():
             "nacl",
             "elastic-ip",
             "load-balancer",
-            "target-group"
+            "target-group",
+            "route53"
         ]
     }
 
@@ -34,7 +35,7 @@ def list_network_resources(
 
         if resource in ["vpc", "subnet", "route-table",
                         "internet-gateway", "security-group",
-                        "nacl", "elastic-ip"]:
+                        "nacl", "elastic-ip", "route53"]:
             ec2 = session.client(
                 "ec2",
                 region_name=region
@@ -54,6 +55,10 @@ def list_network_resources(
                 return ec2.describe_network_acls()
             elif resource == "elastic-ip":
                 return ec2.describe_addresses()
+            elif resource == "route53":
+                route53 = session.client("route53")
+                return route53.list_hosted_zones()
+            
 
         elif resource in ["load-balancer", "target-group"]:
             elb = session.client(
@@ -72,6 +77,10 @@ def list_network_resources(
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(500, detail=str(e))
     
+    
+    
+
+    
 class ResourceIds(BaseModel):
     ids: list[str]    
         
@@ -88,7 +97,7 @@ def describe_specific_network_resource(
 
     try:
         simplified = []
-
+        #for vpc
         if resource == "vpc":
             vpcs = ec2.describe_vpcs(VpcIds=resource_ids.ids)["Vpcs"]
             for v in vpcs:
@@ -97,14 +106,10 @@ def describe_specific_network_resource(
                 # List of all subnet IDs in the VPC
                 subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["Subnets"]
                 subnet_ids = [s["SubnetId"] for s in subnets]
-                
                 route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["RouteTables"]
                 route_table_ids = [rt["RouteTableId"] for rt in route_tables]
-
-                #Internet gateways attached to the VPC
                 igws = ec2.describe_internet_gateways(Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}])["InternetGateways"]
-                igw_ids = [igw["InternetGatewayId"] for igw in igws]
-                
+                igw_ids = [igw["InternetGatewayId"] for igw in igws]      
                 sgs = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["SecurityGroups"]
                 sg_ids = [sg["GroupId"] for sg in sgs]
                 
@@ -116,7 +121,8 @@ def describe_specific_network_resource(
             "SecurityGroups": sg_ids,
             "Tags": v.get("Tags", [])
         })
-            
+        
+        #for subnet
         elif resource == "subnet":
             subnets = ec2.describe_subnets(SubnetIds=resource_ids.ids)["Subnets"]
             for s in subnets:
@@ -132,7 +138,7 @@ def describe_specific_network_resource(
                     route_table_id = main_rt["RouteTableId"] if main_rt else None
                 else:
                     route_table_id = route_tables[0]["RouteTableId"]
-                
+
                 rt = ec2.describe_route_tables(RouteTableIds=[route_table_id])["RouteTables"][0]
                 is_public = any(r.get("GatewayId", "").startswith("igw-") for r in rt.get("Routes", []))
                 rt_type = "public" if is_public else "private"
@@ -157,13 +163,11 @@ def describe_specific_network_resource(
                     "SecurityGroups": sg_ids 
                 })
 
-        
+        #for route table
         elif resource == "route-table":
             route_tables = ec2.describe_route_tables(RouteTableIds=resource_ids.ids)["RouteTables"]
             for rt in route_tables:
-                #subnet_ids = []
-                subnets = [assoc["SubnetId"] for assoc in rt.get("Associations", []) if "SubnetId" in assoc]
-                
+                subnets = [assoc["SubnetId"] for assoc in rt.get("Associations", []) if "SubnetId" in assoc]                
                 is_public = any(
                     r.get("DestinationCidrBlock") == "0.0.0.0/0" and r.get("GatewayId", "").startswith("igw-")
                     for r in rt.get("Routes", [])
@@ -187,7 +191,8 @@ def describe_specific_network_resource(
             "PropagatingVgws": rt.get("PropagatingVgws", []),
             "Tags": rt.get("Tags", [])               
             })
-
+            
+        #for internet gateway
         elif resource == "internet-gateway":
             igws = ec2.describe_internet_gateways(InternetGatewayIds=resource_ids.ids)["InternetGateways"]
             for igw in igws:
@@ -195,7 +200,7 @@ def describe_specific_network_resource(
                     "InternetGatewayId": igw["InternetGatewayId"],
                     "AttachedVpcs": [vpc["VpcId"] for vpc in igw.get("Attachments", [])]
                 })
-
+        #for security group
         elif resource == "security-group":
             sgs = ec2.describe_security_groups(GroupIds=resource_ids.ids)["SecurityGroups"]
             for sg in sgs:
@@ -206,7 +211,7 @@ def describe_specific_network_resource(
                     "OutboundRules": sg.get("IpPermissionsEgress", []),
                     "Tags": sg.get("Tags", [])
                 })
-
+        #for nacl
         elif resource == "nacl":
             nacls = ec2.describe_network_acls(NetworkAclIds=resource_ids.ids)["NetworkAcls"]
             for n in nacls:
@@ -217,6 +222,7 @@ def describe_specific_network_resource(
                     "Entries": n.get("Entries", [])
                 })
 
+        #for ElasticIPelastic IP use full arn (check the region in the arn too)
         elif resource == "elastic-ip":
             addresses = ec2.describe_addresses()["Addresses"]
             for eip in addresses:
@@ -231,7 +237,7 @@ def describe_specific_network_resource(
                         "Domain": eip.get("Domain"),
                     "Tags": eip.get("Tags", [])
                     })
-
+        #for load balancer
         elif resource == "load-balancer":
             all_lbs = elb.describe_load_balancers()["LoadBalancers"]
             for lb in all_lbs:
@@ -250,7 +256,7 @@ def describe_specific_network_resource(
                     "Tags": elb.describe_tags(ResourceArns=[lb["LoadBalancerArn"]])["TagDescriptions"][0].get("Tags", [])
 
                 })
-
+        #for target group
         elif resource == "target-group":
             tgs = elb.describe_target_groups()["TargetGroups"]
             for tg in tgs:
@@ -262,6 +268,34 @@ def describe_specific_network_resource(
                         "Protocol": tg["Protocol"],
                         "VpcId": tg["VpcId"]
                     })
+                    
+        elif resource == "route53":
+            route53 = session.client("route53")
+            zones = route53.list_hosted_zones()["HostedZones"]
+            for z in zones:
+                if z["Id"].split("/")[-1] in resource_ids.ids or z["Name"] in resource_ids.ids:
+                    simplified.append({
+                        "Id": z["Id"],
+                        "Name": z["Name"],
+                        "CallerReference": z["CallerReference"],
+                        "ResourceRecordSetCount": z["ResourceRecordSetCount"],
+                        "Config": z.get("Config", {}),
+                        "Tags": route53.list_tags_for_resource(ResourceType="hostedzone", ResourceId=z["Id"].split("/")[-1]).get("ResourceTagSet", {}).get("Tags", [])
+                    })
+                    
+        elif resource == "route53":
+            route53 = session.client("route53")
+            simplified = []
+            for hz_id in resource_ids.ids:
+                hz = route53.get_hosted_zone(HostedZoneId=hz_id)
+                simplified.append({
+                    "Id": hz["HostedZone"]["Id"],
+                    "Name": hz["HostedZone"]["Name"],
+                    "CallerReference": hz["HostedZone"]["CallerReference"],
+                    "ResourceRecordSetCount": hz["HostedZone"]["ResourceRecordSetCount"],
+                    "Config": hz["HostedZone"].get("Config", {}),
+                    "Tags": route53.list_tags_for_resource(ResourceType="hostedzone", ResourceId=hz["HostedZone"]["Id"].split("/")[-1]).get("ResourceTagSet", {}).get("Tags", [])
+                })
 
         else:
             raise HTTPException(
@@ -271,5 +305,39 @@ def describe_specific_network_resource(
 
         return {"service": resource, "resources": simplified}
 
+    except (BotoCoreError, ClientError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+#added to list security groups with all tcp open to the world
+@router.get("/networking/security-groups/all-tcp-open")
+def list_security_groups_with_all_tcp_open(
+    request: Request,
+    region: str = "us-east-1"
+):
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found or expired")
+    ec2 = session.client("ec2", region_name=region)
+    try:
+        sgs = ec2.describe_security_groups()["SecurityGroups"]
+        result = []
+        for sg in sgs:
+            for rule in sg.get("IpPermissions", []):
+                if (
+                    rule.get("IpProtocol") == "tcp"
+                    and rule.get("FromPort") == 0
+                    and rule.get("ToPort") == 65535
+                    and any(ip.get("CidrIp") == "0.0.0.0/0" for ip in rule.get("IpRanges", []))
+                ):
+                    result.append({
+                        "GroupId": sg["GroupId"],
+                        "GroupName": sg.get("GroupName"),
+                        "VpcId": sg.get("VpcId"),
+                        "Description": sg.get("Description"),
+                        "Tags": sg.get("Tags", []),
+                        "AllTCPInboundOpenRule": rule
+                    })
+                    break
+        return {"SecurityGroupsWithAllTCPOpen": result}
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=500, detail=str(e))
