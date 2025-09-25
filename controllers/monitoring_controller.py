@@ -1,121 +1,237 @@
-from fastapi import APIRouter, Request
-from pydantic import BaseModel
-import boto3
+from fastapi import APIRouter, Request, Query
+from typing import Optional, List
 from botocore.exceptions import ClientError
 
 router = APIRouter()
 
-# --- Request body model ---
-class ResourceRequest(BaseModel):
-    ids: list[str]
-    account_id: str | None = None
-    region: str = "us-east-1"
 
-
-# --- 1. GET /monitoring ---
+# --- GET /monitoring ---
 @router.get("/monitoring")
 def list_monitoring_services(request: Request):
+    """List all monitoring services supported by the API."""
     try:
         _ = request.state.session
-        services = ["cloudwatch", "cloudtrail", "config", "xray"]
+        services = [
+            "cloudwatch-logs",
+            "cloudwatch-alarms",
+            "cloudwatch-dashboards",
+            "cloudtrail",
+            "xray",
+            "config",
+            "sns"
+        ]
         return {"monitoring_services": services}
     except Exception as e:
         return {"error": str(e)}
 
 
-# --- 2. GET /monitoring/cloudwatch/list ---
-@router.get("/monitoring/cloudwatch/list")
-def list_cloudwatch_resources(request: Request, region: str = "us-east-1"):
-    """
-    List all CloudWatch alarms and log groups in the specified region.
-    """
+# --- Generic /list endpoint for all monitoring services ---
+@router.get("/monitoring/{service_name}/list")
+def list_service_resources(
+    service_name: str,
+    request: Request,
+    region: str = Query("us-east-1"),
+):
+    """List all resources under a specific monitoring service."""
     try:
         creds = request.state.session
-        cw_client = creds.client("cloudwatch", region_name=region)
-        logs_client = creds.client("logs", region_name=region)
+        service_name = service_name.lower()
+        resources = []
 
-        # Alarms
-        alarms = []
-        paginator = cw_client.get_paginator("describe_alarms")
-        for page in paginator.paginate():
-            for alarm in page.get("MetricAlarms", []):
-                alarms.append(alarm["AlarmName"])
+        if service_name == "cloudwatch-logs":
+            logs_client = creds.client("logs", region_name=region)
+            resp = logs_client.describe_log_groups()
+            resources = resp.get("logGroups", [])
 
-        # Log Groups
-        log_groups = []
-        paginator = logs_client.get_paginator("describe_log_groups")
-        for page in paginator.paginate():
-            for lg in page.get("logGroups", []):
-                log_groups.append(lg["logGroupName"])
+        elif service_name == "cloudwatch-dashboards":
+            cw_client = creds.client("cloudwatch", region_name=region)
+            resp = cw_client.list_dashboards()
+            resources = resp.get("DashboardEntries", [])
+
+        elif service_name == "cloudwatch-alarms":
+            cw_client = creds.client("cloudwatch", region_name=region)
+            resp = cw_client.describe_alarms()
+            resources = resp.get("MetricAlarms", [])
+
+        elif service_name == "cloudtrail":
+            ct_client = creds.client("cloudtrail", region_name=region)
+            resp = ct_client.describe_trails()
+            resources = resp.get("trailList", resp.get("Trails", []))
+
+        elif service_name == "xray":
+            xray_client = creds.client("xray", region_name=region)
+            resp = xray_client.get_sampling_rules()
+            resources = resp.get("SamplingRuleRecords", [])
+
+        elif service_name == "config":
+            config_client = creds.client("config", region_name=region)
+            resp = config_client.describe_config_rules()
+            resources = resp.get("ConfigRules", [])
+
+        elif service_name == "sns":
+            sns_client = creds.client("sns", region_name=region)
+            resp = sns_client.list_topics()
+            resources = resp.get("Topics", [])
+
+        else:
+            return {"error": f"Service '{service_name}' not supported."}
 
         return {
             "statusCode": 200,
             "statusMessage": "Success",
-            "region": region,
-            "cloudwatch_alarms": alarms,
-            "cloudwatch_log_groups": log_groups
+            "service_name": service_name,
+            "resources": resources
         }
 
     except ClientError as e:
-        return {"statusCode": 500, "statusMessage": "AWS ClientError", "error": str(e)}
+        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
     except Exception as e:
         return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
 
 
-# --- 3. POST /monitoring/cloudwatch ---
-@router.post("/monitoring/cloudwatch")
-def describe_cloudwatch_resources(request: Request, body: ResourceRequest):
-    """
-    Describe specific CloudWatch alarms or log groups.
-    Will return details for alarms if name matches an alarm,
-    or log groups if name matches a log group.
-    """
+# --- Generic describe endpoint ---
+@router.get("/monitoring/{service_name}")
+def describe_resources(
+    service_name: str,
+    request: Request,
+    region: str = Query("us-east-1"),
+    ids: Optional[List[str]] = Query(None)
+):
+    """Describe specific resources under a monitoring service."""
     try:
         creds = request.state.session
-        cw_client = creds.client("cloudwatch", region_name=body.region)
-        logs_client = creds.client("logs", region_name=body.region)
-
+        service_name = service_name.lower()
         details = []
 
-        for name in body.ids:
-            # Try CloudWatch alarms
-            alarm_resp = cw_client.describe_alarms(AlarmNames=[name])
-            alarms = alarm_resp.get("MetricAlarms", [])
-            if alarms:
-                for alarm in alarms:
-                    details.append({
-                        "Type": "Alarm",
-                        "Name": alarm["AlarmName"],
-                        "State": alarm["StateValue"],
-                        "MetricName": alarm.get("MetricName"),
-                        "Namespace": alarm.get("Namespace"),
-                        "Threshold": alarm.get("Threshold"),
-                        "EvaluationPeriods": alarm.get("EvaluationPeriods")
-                    })
-                continue  # skip checking log groups if found as alarm
+        if service_name == "cloudwatch-logs":
+            logs_client = creds.client("logs", region_name=region)
+            if ids:
+                for log_name in ids:
+                    resp = logs_client.describe_log_groups(logGroupNamePrefix=log_name)
+                    details.extend(resp.get("logGroups", []))
+            else:
+                resp = logs_client.describe_log_groups()
+                details = resp.get("logGroups", [])
 
-            # Try CloudWatch log groups
-            logs_resp = logs_client.describe_log_groups(logGroupNamePrefix=name)
-            log_groups = logs_resp.get("logGroups", [])
-            if log_groups:
-                for lg in log_groups:
-                    details.append({
-                        "Type": "LogGroup",
-                        "Name": lg["logGroupName"],
-                        "CreationTime": lg["creationTime"],
-                        "StoredBytes": lg["storedBytes"]
-                    })
+        elif service_name == "cloudwatch-dashboards":
+            cw_client = creds.client("cloudwatch", region_name=region)
+            if ids:
+                for db_name in ids:
+                    resp = cw_client.get_dashboard(DashboardName=db_name)
+                    details.append(resp)
+            else:
+                resp = cw_client.list_dashboards()
+                details = resp.get("DashboardEntries", [])
+
+        elif service_name == "cloudwatch-alarms":
+            cw_client = creds.client("cloudwatch", region_name=region)
+            if ids:
+                resp = cw_client.describe_alarms(AlarmNames=ids)
+            else:
+                resp = cw_client.describe_alarms()
+            details = resp.get("MetricAlarms", [])
+
+        elif service_name == "cloudtrail":
+            ct_client = creds.client("cloudtrail", region_name=region)
+            if ids:
+                resp = ct_client.describe_trails(trailNameList=ids)
+            else:
+                resp = ct_client.describe_trails()
+            details = resp.get("trailList", resp.get("Trails", []))
+
+        elif service_name == "xray":
+            xray_client = creds.client("xray", region_name=region)
+            resp = xray_client.get_sampling_rules()
+            if ids:
+                details = [r for r in resp.get("SamplingRuleRecords", []) if r["SamplingRule"]["RuleName"] in ids]
+            else:
+                details = resp.get("SamplingRuleRecords", [])
+
+        elif service_name == "config":
+            config_client = creds.client("config", region_name=region)
+            if ids:
+                resp = config_client.describe_config_rules(ConfigRuleNames=ids)
+            else:
+                resp = config_client.describe_config_rules()
+            details = resp.get("ConfigRules", [])
+
+        elif service_name == "sns":
+            sns_client = creds.client("sns", region_name=region)
+            if ids:
+                for topic_arn in ids:
+                    resp = sns_client.get_topic_attributes(TopicArn=topic_arn)
+                    details.append(resp)
+            else:
+                resp = sns_client.list_topics()
+                details = resp.get("Topics", [])
+
+        else:
+            return {"statusCode": 400, "statusMessage": "Invalid service"}
 
         return {
             "statusCode": 200,
             "statusMessage": "Success",
-            "account_id": body.account_id or "current",
-            "region": body.region,
-            "service_name": "cloudwatch",
+            "service_name": service_name,
             "details": details
         }
 
     except ClientError as e:
-        return {"statusCode": 500, "statusMessage": "AWS ClientError", "error": str(e)}
+        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
     except Exception as e:
         return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
+
+
+# --- Separate endpoint for Alarms (like compute format) ---
+@router.get("/monitoring/alarms/list")
+def list_alarms(request: Request, region: str = Query("us-east-1")):
+    try:
+        creds = request.state.session
+        cw_client = creds.client("cloudwatch", region_name=region)
+        resp = cw_client.describe_alarms()
+        return {"service_name": "cloudwatch-alarms", "resources": resp.get("MetricAlarms", [])}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/monitoring/alarms")
+def describe_alarms(request: Request, region: str = Query("us-east-1"), ids: Optional[List[str]] = Query(None)):
+    try:
+        creds = request.state.session
+        cw_client = creds.client("cloudwatch", region_name=region)
+        if ids:
+            resp = cw_client.describe_alarms(AlarmNames=ids)
+        else:
+            resp = cw_client.describe_alarms()
+        return {"service_name": "cloudwatch-alarms", "details": resp.get("MetricAlarms", [])}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# --- Separate endpoint for SNS (like compute format) ---
+@router.get("/monitoring/sns/list")
+def list_sns_topics(request: Request, region: str = Query("us-east-1")):
+    try:
+        creds = request.state.session
+        sns_client = creds.client("sns", region_name=region)
+        resp = sns_client.list_topics()
+        return {"service_name": "sns", "resources": resp.get("Topics", [])}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/monitoring/sns")
+def describe_sns_topics(request: Request, region: str = Query("us-east-1"), ids: Optional[List[str]] = Query(None)):
+    try:
+        creds = request.state.session
+        sns_client = creds.client("sns", region_name=region)
+        details = []
+        if ids:
+            for topic_arn in ids:
+                resp = sns_client.get_topic_attributes(TopicArn=topic_arn)
+                details.append(resp)
+        else:
+            resp = sns_client.list_topics()
+            details = resp.get("Topics", [])
+        return {"service_name": "sns", "details": details}
+    except Exception as e:
+        return {"error": str(e)}
