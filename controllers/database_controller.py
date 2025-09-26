@@ -153,9 +153,64 @@ def describe_specific_resources(
                     )["CacheClusters"][0]
                 )
             return {"service": "ElastiCache", "resources": clusters_info}
-
+        
+        elif service == "cloudtrail":
+            client = session.client("cloudtrail", region_name=region)
+            events = client.lookup_events(
+                StartTime=start,
+                EndTime=end,
+                MaxResults=50
+            )
+            simplified = [
+                {
+                    "event_time": e["EventTime"],
+                    "event_name": e["EventName"],
+                    "username": e.get("Username"),
+                    "source_ip": e.get("SourceIPAddress"),
+                }
+                for e in events.get("Events", [])
+            ]
+            return {"service": "cloudtrail", "logs": simplified}
+        elif service == "vpc-flow":
+            ec2 = session.client("ec2", region_name=region)
+            flow_logs = ec2.describe_flow_logs()["FlowLogs"]
+            filtered = []
+            for f in flow_logs:
+                creation_time = f["CreationTime"]
+                if not isinstance(creation_time, datetime):
+                    try:
+                        creation_time = datetime.fromisoformat(str(creation_time))
+                        if creation_time.tzinfo is not None:
+                            creation_time = creation_time.astimezone(tz=None).replace(tzinfo=None)
+                    except Exception:
+                        continue
+                if creation_time >= start:
+                    filtered.append(f)
+            return {"service": "vpc-flow", "logs": filtered}
+        elif service == "s3-access":
+            if not bucket_name:
+                raise HTTPException(400, "bucket_name is required")
+            s3 = session.client("s3", region_name=region)
+            objects = s3.list_objects_v2(Bucket=bucket_name)
+            logs = []
+            for obj in objects.get("Contents", []):
+                lm = obj["LastModified"]
+                if lm.tzinfo is not None:
+                    lm = lm.astimezone(tz=None).replace(tzinfo=None)
+                if start <= lm <= end:
+                    logs.append({"key": obj["Key"], "last_modified": obj["LastModified"]})
+            return {"service": "s3-access", "logs": logs}
+        elif service == "load-balancer":
+            if not load_balancer_arn:
+                raise HTTPException(400, "load_balancer_arn is required")
+            elb = session.client("elbv2", region_name=region)
+            tags = elb.describe_tags(ResourceArns=[load_balancer_arn])
+            return {
+                "service": "load-balancer",
+                "logs": {"LoadBalancerArn": load_balancer_arn, "Tags": tags.get("TagDescriptions", [])}
+            }
         else:
-            raise HTTPException(
+                raise HTTPException(
                 status_code=400,
                 detail="Supported services: rds, dynamodb, elasticache",
             )

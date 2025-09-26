@@ -2,10 +2,97 @@ from fastapi import APIRouter, Request, Query, HTTPException
 #import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel
+from datetime import datetime, timedelta
 
 
 router = APIRouter()
 
+# Bandwidth usage by VPC (24hr and month-to-date)
+@router.get("/networking/vpc-bandwidth-usage")
+def vpc_bandwidth_usage(
+    request: Request,
+    region: str = "us-east-1"
+):
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found or expired")
+    ec2 = session.client("ec2", region_name=region)
+    cloudwatch = session.client("cloudwatch", region_name=region)
+    try:
+        # Get all VPCs
+        vpcs = ec2.describe_vpcs()["Vpcs"]
+        # Get all EC2 instances and map to VPCs
+        reservations = ec2.describe_instances()["Reservations"]
+        vpc_instance_map = {}
+        for r in reservations:
+            for i in r["Instances"]:
+                vpc_id = i.get("VpcId")
+                if vpc_id:
+                    vpc_instance_map.setdefault(vpc_id, []).append(i["InstanceId"])
+        now = datetime.utcnow()
+        start_24h = now - timedelta(days=1)
+        start_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        vpc_usage = {}
+        for vpc in vpcs:
+            vpc_id = vpc["VpcId"]
+            instance_ids = vpc_instance_map.get(vpc_id, [])
+            total_in_24h = 0
+            total_out_24h = 0
+            total_in_month = 0
+            total_out_month = 0
+            for instance_id in instance_ids:
+                for metric in ["NetworkIn", "NetworkOut"]:
+                    # 24hr
+                    stats_24h = cloudwatch.get_metric_statistics(
+                        Namespace="AWS/EC2",
+                        MetricName=metric,
+                        Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                        StartTime=start_24h,
+                        EndTime=now,
+                        Period=86400,
+                        Statistics=["Sum"]
+                    )
+                    datapoints_24h = stats_24h.get("Datapoints", [])
+                    value_24h = datapoints_24h[0]["Sum"] if datapoints_24h else 0
+                    # Month
+                    stats_month = cloudwatch.get_metric_statistics(
+                        Namespace="AWS/EC2",
+                        MetricName=metric,
+                        Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                        StartTime=start_month,
+                        EndTime=now,
+                        Period=86400,
+                        Statistics=["Sum"]
+                    )
+                    value_month = sum(dp["Sum"] for dp in stats_month.get("Datapoints", []))
+                    if metric == "NetworkIn":
+                        total_in_24h += value_24h
+                        total_in_month += value_month
+                    else:
+                        total_out_24h += value_24h
+                        total_out_month += value_month
+            def to_gb(val):
+                return round(val / (1024 ** 3), 2)
+            vpc_usage[vpc_id] = {
+                "last_24_hours": {
+                    "total_network_in_gb": to_gb(total_in_24h),
+                    "total_network_out_gb": to_gb(total_out_24h),
+                    "total_bandwidth_gb": to_gb(total_in_24h + total_out_24h)
+                },
+                "month_to_date": {
+                    "total_network_in_gb": to_gb(total_in_month),
+                    "total_network_out_gb": to_gb(total_out_month),
+                    "total_bandwidth_gb": to_gb(total_in_month + total_out_month)
+                },
+                "instance_count": len(instance_ids),
+                "tags": vpc.get("Tags", [])
+            }
+        return {"region": region, "vpc_bandwidth_usage": vpc_usage}
+    except (BotoCoreError, ClientError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# to list networking services
 @router.get("/networking")
 def list_networking_services():
     return {
@@ -19,23 +106,108 @@ def list_networking_services():
             "elastic-ip",
             "load-balancer",
             "target-group",
-            "route53"
+            "route53",
+            "nat-gateway",
+            "transit-gateway"
+            "bandwidth-usage"
         ]
     }
 
+#Added to get bandwidth usage by region
+@router.get("/networking/bandwidth-usage")
+def bandwidth_usage_by_region(
+    request: Request,
+    region: str = "us-east-1"
+):
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found or expired")
+    ec2 = session.client("ec2", region_name=region)
+    cloudwatch = session.client("cloudwatch", region_name=region)
+    try:
+        # Get all EC2 instance IDs
+        reservations = ec2.describe_instances()
+        instance_ids = [
+            i["InstanceId"]
+            for r in reservations["Reservations"]
+            for i in r["Instances"]
+        ]
+        total_in_24h = 0
+        total_out_24h = 0
+        total_in_month = 0
+        total_out_month = 0
+        now = datetime.utcnow()
+        # 24 hours
+        start_24h = now - timedelta(days=1)
+        # Month-to-date
+        start_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        for instance_id in instance_ids:
+            for metric in ["NetworkIn", "NetworkOut"]:
+                # 24h
+                stats_24h = cloudwatch.get_metric_statistics(
+                    Namespace="AWS/EC2",
+                    MetricName=metric,
+                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                    StartTime=start_24h,
+                    EndTime=now,
+                    Period=86400,  # 1 day
+                    Statistics=["Sum"]
+                )
+                datapoints_24h = stats_24h.get("Datapoints", [])
+                value_24h = datapoints_24h[0]["Sum"] if datapoints_24h else 0
+                # Month
+                stats_month = cloudwatch.get_metric_statistics(
+                    Namespace="AWS/EC2",
+                    MetricName=metric,
+                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                    StartTime=start_month,
+                    EndTime=now,
+                    Period=86400,  # 1 day
+                    Statistics=["Sum"]
+                )
+                value_month = sum(dp["Sum"] for dp in stats_month.get("Datapoints", []))
+                if metric == "NetworkIn":
+                    total_in_24h += value_24h
+                    total_in_month += value_month
+                else:
+                    total_out_24h += value_24h
+                    total_out_month += value_month
+        # Convert bytes to GB
+        def to_gb(val):
+            return round(val / (1024 ** 3), 2)
+        return {
+            "region": region,
+            "last_24_hours": {
+                "total_network_in_gb": to_gb(total_in_24h),
+                "total_network_out_gb": to_gb(total_out_24h),
+                "total_bandwidth_gb": to_gb(total_in_24h + total_out_24h)
+            },
+            "month_to_date": {
+                "total_network_in_gb": to_gb(total_in_month),
+                "total_network_out_gb": to_gb(total_out_month),
+                "total_bandwidth_gb": to_gb(total_in_month + total_out_month)
+            }
+        }
+
+    except (BotoCoreError, ClientError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# to list network resources
 @router.get("/networking/{resource}")
 def list_network_resources(
     resource: str,
     request: Request,
     account_id: str = Query(None),
-    region: str = "us-east-1"
+    region: str = "us-east-1",
+    vpc_id: str = Query(None)
 ):
     session = request.state.session
     try:
 
         if resource in ["vpc", "subnet", "route-table",
                         "internet-gateway", "security-group",
-                        "nacl", "elastic-ip", "route53"]:
+                        "nacl", "elastic-ip", "route53",
+                        "nat-gateway", "transit-gateway"]:
             ec2 = session.client(
                 "ec2",
                 region_name=region
@@ -55,6 +227,10 @@ def list_network_resources(
                 return ec2.describe_network_acls()
             elif resource == "elastic-ip":
                 return ec2.describe_addresses()
+            elif resource == "nat-gateway":
+                return ec2.describe_nat_gateways()
+            elif resource == "transit-gateway":
+                return ec2.describe_transit_gateways()
             elif resource == "route53":
                 route53 = session.client("route53")
                 return route53.list_hosted_zones()
@@ -72,7 +248,7 @@ def list_network_resources(
                 return elb.describe_target_groups()
 
         else:
-            raise HTTPException(400, "Supported: vpc, subnet, route-table, internet-gateway, security-group, nacl, elastic-ip, load-balancer, target-group")
+            raise HTTPException(400, "Supported: vpc, subnet, route-table, internet-gateway, security-group, nacl, elastic-ip, nat-gateway, transit-gateway, load-balancer, target-group, route53")
 
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(500, detail=str(e))
@@ -297,10 +473,35 @@ def describe_specific_network_resource(
                     "Tags": route53.list_tags_for_resource(ResourceType="hostedzone", ResourceId=hz["HostedZone"]["Id"].split("/")[-1]).get("ResourceTagSet", {}).get("Tags", [])
                 })
 
+        #for nat gateway
+        elif resource == "nat-gateway":
+            nat_gateways = ec2.describe_nat_gateways(NatGatewayIds=resource_ids.ids)["NatGateways"]
+            for nat in nat_gateways:
+                simplified.append({
+                    "NatGatewayId": nat["NatGatewayId"],
+                    "VpcId": nat.get("VpcId"),
+                    "SubnetId": nat.get("SubnetId"),
+                    "State": nat.get("State"),
+                    "ConnectivityType": nat.get("ConnectivityType"),
+                    "Tags": nat.get("Tags", [])
+                })
+        elif resource == "transit-gateway":
+            tgs = ec2.describe_transit_gateways(TransitGatewayIds=resource_ids.ids)["TransitGateways"]
+            for tg in tgs:
+                simplified.append({
+                    "TransitGatewayId": tg["TransitGatewayId"],
+                    "Description": tg.get("Description"),
+                    "State": tg.get("State"),
+                    "AmazonSideAsn": tg.get("Options", {}).get("AmazonSideAsn"),
+                    "AutoAcceptSharedAttachments": tg.get("Options", {}).get("AutoAcceptSharedAttachments"),
+                    "DefaultRouteTableAssociation": tg.get("Options", {}).get("DefaultRouteTableAssociation"),
+                    "DefaultRouteTablePropagation": tg.get("Options", {}).get("DefaultRouteTablePropagation"),
+                    "Tags": tg.get("Tags", [])
+                })
         else:
             raise HTTPException(
                 status_code=400,
-                detail="Supported resources: vpc, subnet, route-table, internet-gateway, security-group, nacl, elastic-ip, load-balancer, target-group"
+                detail="Supported resources: vpc, subnet, route-table, internet-gateway, security-group, nacl, elastic-ip, nat-gateway, transit-gateway, load-balancer, target-group, route53"
             )
 
         return {"service": resource, "resources": simplified}
