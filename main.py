@@ -10,7 +10,9 @@ from middleware.aws_middleware import AWSMiddleware
 from controllers.healthcheck_controller import router as healthcheck_router
 from controllers.compute_controller import router as compute_router
 from controllers.regions_controller import router as regions_router
-from controllers.storage_controller import router as storage_router
+from controllers.database_controller import router as database_router
+from controllers.network_controller import router as network_router
+from controllers.logs_controller import router as logs_router
 
 # This is a list of allowed origins for CORS
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -35,7 +37,9 @@ app.add_middleware(
 app.include_router(healthcheck_router, tags=["healthcheck"])
 app.include_router(compute_router, prefix="/api", tags=["compute"])
 app.include_router(regions_router, prefix="/api", tags=["regions"])
-app.include_router(storage_router, prefix="/api", tags=["storage"])
+app.include_router(network_router, prefix="/api", tags=["network"])
+app.include_router(database_router, prefix="/api", tags=["database"])
+app.include_router(logs_router, prefix="/api", tags=["logs"])
 
 # Add custom AWS middleware after CORS
 app.add_middleware(AWSMiddleware)
