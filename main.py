@@ -16,6 +16,7 @@ from controllers.regions_controller import router as regions_router
 from controllers.database_controller import router as database_router
 from controllers.network_controller import router as network_router
 from controllers.logs_controller import router as logs_router
+from controllers.storage_controller import router as storage_router
 
 
 # This is a list of allowed origins for CORS
@@ -46,6 +47,7 @@ app.include_router(regions_router, prefix="/api", tags=["regions"])
 app.include_router(network_router, prefix="/api", tags=["network"])
 app.include_router(database_router, prefix="/api", tags=["database"])
 app.include_router(logs_router, prefix="/api", tags=["logs"])
+app.include_router(storage_router, prefix="/api", tags=["storage"])
 
 
 

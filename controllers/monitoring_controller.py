@@ -1,237 +1,235 @@
-from fastapi import APIRouter, Request, Query
-from typing import Optional, List
-from botocore.exceptions import ClientError
+from fastapi import APIRouter, Request, HTTPException, Query
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List
+import logging, time
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
+# Monitoring Services
+MONITOR_SERVICES = [
+    "cloudwatch_metrics",
+    "cloudwatch_alarms",
+    "cloudwatch_logs",
+    "cloudtrail",
+    "config",
+    "xray"
+]
 
-# --- GET /monitoring ---
-@router.get("/monitoring")
-def list_monitoring_services(request: Request):
-    """List all monitoring services supported by the API."""
-    try:
-        _ = request.state.session
-        services = [
-            "cloudwatch-logs",
-            "cloudwatch-alarms",
-            "cloudwatch-dashboards",
-            "cloudtrail",
-            "xray",
-            "config",
-            "sns"
-        ]
-        return {"monitoring_services": services}
-    except Exception as e:
-        return {"error": str(e)}
+# Cache
+CACHE_MON: Dict[Any, Dict[str, Any]] = {}
+CACHE_TTL = 300  # seconds
 
+def get_mon_cache(account_id: str, region: str, service: str):
+    key = (account_id, region, service)
+    entry = CACHE_MON.get(key)
+    if entry and (time.time() - entry["timestamp"] < CACHE_TTL):
+        return entry["data"]
+    return None
 
-# --- Generic /list endpoint for all monitoring services ---
-@router.get("/monitoring/{service_name}/list")
-def list_service_resources(
-    service_name: str,
-    request: Request,
-    region: str = Query("us-east-1"),
-):
-    """List all resources under a specific monitoring service."""
-    try:
-        creds = request.state.session
-        service_name = service_name.lower()
-        resources = []
+def set_mon_cache(account_id: str, region: str, service: str, data: Any):
+    key = (account_id, region, service)
+    CACHE_MON[key] = {"data": data, "timestamp": time.time()}
 
-        if service_name == "cloudwatch-logs":
-            logs_client = creds.client("logs", region_name=region)
-            resp = logs_client.describe_log_groups()
-            resources = resp.get("logGroups", [])
+# Pydantic Models
+class ResourceDetailRequest(BaseModel):
+    resource_id: str
 
-        elif service_name == "cloudwatch-dashboards":
-            cw_client = creds.client("cloudwatch", region_name=region)
-            resp = cw_client.list_dashboards()
-            resources = resp.get("DashboardEntries", [])
+class MonitoringListResponse(BaseModel):
+    account_id: str
+    region: str
+    cloudwatch_metrics: List[str] = Field(default_factory=list)
+    cloudwatch_alarms: List[str] = Field(default_factory=list)
+    cloudwatch_logs: List[str] = Field(default_factory=list)
+    cloudtrail: List[str] = Field(default_factory=list)
+    config: List[str] = Field(default_factory=list)
+    xray: List[str] = Field(default_factory=list)
 
-        elif service_name == "cloudwatch-alarms":
-            cw_client = creds.client("cloudwatch", region_name=region)
-            resp = cw_client.describe_alarms()
-            resources = resp.get("MetricAlarms", [])
+class ServiceListResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resources: List[str] = Field(default_factory=list)
+    total: int
 
-        elif service_name == "cloudtrail":
-            ct_client = creds.client("cloudtrail", region_name=region)
-            resp = ct_client.describe_trails()
-            resources = resp.get("trailList", resp.get("Trails", []))
+class Recommendation(BaseModel):
+    type: str
+    severity: str
+    message: str
 
-        elif service_name == "xray":
-            xray_client = creds.client("xray", region_name=region)
-            resp = xray_client.get_sampling_rules()
-            resources = resp.get("SamplingRuleRecords", [])
+class ResourceDetailResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resource: str
+    details: Dict[str, Any]
 
-        elif service_name == "config":
-            config_client = creds.client("config", region_name=region)
-            resp = config_client.describe_config_rules()
-            resources = resp.get("ConfigRules", [])
+# Paginator Functions
+def list_cloudwatch_metrics(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "cloudwatch_metrics")
+    if cached: return cached
+    cw = session.client("cloudwatch", region_name=region)
+    metrics = []
+    paginator = cw.get_paginator("list_metrics")
+    for page in paginator.paginate():
+        for m in page.get("Metrics", []):
+            metrics.append(f"{m['Namespace']}:{m['MetricName']}")
+    set_mon_cache(account_id, region, "cloudwatch_metrics", metrics)
+    return metrics
 
-        elif service_name == "sns":
-            sns_client = creds.client("sns", region_name=region)
-            resp = sns_client.list_topics()
-            resources = resp.get("Topics", [])
+def list_cloudwatch_alarms(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "cloudwatch_alarms")
+    if cached: return cached
+    cw = session.client("cloudwatch", region_name=region)
+    alarms = []
+    paginator = cw.get_paginator("describe_alarms")
+    for page in paginator.paginate():
+        for a in page.get("MetricAlarms", []):
+            alarms.append(a["AlarmName"])
+    set_mon_cache(account_id, region, "cloudwatch_alarms", alarms)
+    return alarms
 
-        else:
-            return {"error": f"Service '{service_name}' not supported."}
+def list_cloudwatch_logs(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "cloudwatch_logs")
+    if cached: return cached
+    logs = session.client("logs", region_name=region)
+    log_groups = []
+    paginator = logs.get_paginator("describe_log_groups")
+    for page in paginator.paginate():
+        for lg in page.get("logGroups", []):
+            log_groups.append(lg["logGroupName"])
+    set_mon_cache(account_id, region, "cloudwatch_logs", log_groups)
+    return log_groups
 
-        return {
-            "statusCode": 200,
-            "statusMessage": "Success",
-            "service_name": service_name,
-            "resources": resources
-        }
+def list_cloudtrail_trails(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "cloudtrail")
+    if cached: return cached
+    ct = session.client("cloudtrail", region_name=region)
+    trails = []
+    paginator = ct.get_paginator("describe_trails")
+    for page in paginator.paginate():
+        for t in page.get("trailList", []):
+            trails.append(t["Name"])
+    set_mon_cache(account_id, region, "cloudtrail", trails)
+    return trails
 
-    except ClientError as e:
-        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
-    except Exception as e:
-        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
+def list_config_rules(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "config")
+    if cached: return cached
+    cfg = session.client("config", region_name=region)
+    rules = []
+    paginator = cfg.get_paginator("describe_config_rules")
+    for page in paginator.paginate():
+        for r in page.get("ConfigRules", []):
+            rules.append(r["ConfigRuleName"])
+    set_mon_cache(account_id, region, "config", rules)
+    return rules
 
+def list_xray_groups(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "xray")
+    if cached: return cached
+    xray = session.client("xray", region_name=region)
+    groups = []
+    paginator = xray.get_paginator("get_groups")
+    for page in paginator.paginate():
+        for g in page.get("Groups", []):
+            groups.append(g["GroupName"])
+    set_mon_cache(account_id, region, "xray", groups)
+    return groups
 
-# --- Generic describe endpoint ---
-@router.get("/monitoring/{service_name}")
-def describe_resources(
-    service_name: str,
-    request: Request,
-    region: str = Query("us-east-1"),
-    ids: Optional[List[str]] = Query(None)
-):
-    """Describe specific resources under a monitoring service."""
-    try:
-        creds = request.state.session
-        service_name = service_name.lower()
-        details = []
+# Detailed Analysis Functions
+def analyze_cloudwatch_alarm(cw_client, alarm_name: str) -> Dict[str, Any]:
+    alarm = cw_client.describe_alarms(AlarmNames=[alarm_name])["MetricAlarms"][0]
+    recommendations = []
+    if not alarm.get("OKActions") and not alarm.get("AlarmActions"):
+        recommendations.append({"type":"notification","severity":"medium","message":"Alarm has no SNS actions"})
+    return {"configuration": alarm, "recommendations": recommendations}
 
-        if service_name == "cloudwatch-logs":
-            logs_client = creds.client("logs", region_name=region)
-            if ids:
-                for log_name in ids:
-                    resp = logs_client.describe_log_groups(logGroupNamePrefix=log_name)
-                    details.extend(resp.get("logGroups", []))
-            else:
-                resp = logs_client.describe_log_groups()
-                details = resp.get("logGroups", [])
+def analyze_cloudtrail_trail(ct_client, trail_name: str) -> Dict[str, Any]:
+    trail = ct_client.describe_trails(trailNameList=[trail_name])["trailList"][0]
+    recommendations = []
+    if not trail.get("IsLogging"):
+        recommendations.append({"type":"security","severity":"high","message":"Trail logging not enabled"})
+    if not trail.get("IsMultiRegionTrail"):
+        recommendations.append({"type":"availability","severity":"medium","message":"Trail not multi-region"})
+    return {"configuration": trail, "recommendations": recommendations}
 
-        elif service_name == "cloudwatch-dashboards":
-            cw_client = creds.client("cloudwatch", region_name=region)
-            if ids:
-                for db_name in ids:
-                    resp = cw_client.get_dashboard(DashboardName=db_name)
-                    details.append(resp)
-            else:
-                resp = cw_client.list_dashboards()
-                details = resp.get("DashboardEntries", [])
+def analyze_config_rule(cfg_client, rule_name: str) -> Dict[str, Any]:
+    rule = cfg_client.describe_config_rules(ConfigRuleNames=[rule_name])["ConfigRules"][0]
+    recommendations = []
+    if not rule.get("Source"):
+        recommendations.append({"type":"security","severity":"high","message":"Rule source not defined"})
+    return {"configuration": rule, "recommendations": recommendations}
 
-        elif service_name == "cloudwatch-alarms":
-            cw_client = creds.client("cloudwatch", region_name=region)
-            if ids:
-                resp = cw_client.describe_alarms(AlarmNames=ids)
-            else:
-                resp = cw_client.describe_alarms()
-            details = resp.get("MetricAlarms", [])
+def analyze_xray_group(xray_client, group_name: str) -> Dict[str, Any]:
+    group = xray_client.get_groups(GroupNames=[group_name])["Groups"][0]
+    recommendations = []
+    return {"configuration": group, "recommendations": recommendations}
 
-        elif service_name == "cloudtrail":
-            ct_client = creds.client("cloudtrail", region_name=region)
-            if ids:
-                resp = ct_client.describe_trails(trailNameList=ids)
-            else:
-                resp = ct_client.describe_trails()
-            details = resp.get("trailList", resp.get("Trails", []))
+# API Routes
+@router.get("/monitoring", response_model=MonitoringListResponse)
+async def list_all_monitoring(request: Request, account_id: str = Query(...), region: str = Query("us-east-1")):
+    session = getattr(request.state, "session", None)
+    if not session: raise HTTPException(401, "AWS session not found")
+    return MonitoringListResponse(
+        account_id=account_id,
+        region=region,
+        cloudwatch_metrics=list_cloudwatch_metrics(session, account_id, region),
+        cloudwatch_alarms=list_cloudwatch_alarms(session, account_id, region),
+        cloudwatch_logs=list_cloudwatch_logs(session, account_id, region),
+        cloudtrail=list_cloudtrail_trails(session, account_id, region),
+        config=list_config_rules(session, account_id, region),
+        xray=list_xray_groups(session, account_id, region)
+    )
 
-        elif service_name == "xray":
-            xray_client = creds.client("xray", region_name=region)
-            resp = xray_client.get_sampling_rules()
-            if ids:
-                details = [r for r in resp.get("SamplingRuleRecords", []) if r["SamplingRule"]["RuleName"] in ids]
-            else:
-                details = resp.get("SamplingRuleRecords", [])
+@router.get("/monitoring/{service}", response_model=ServiceListResponse)
+async def list_monitoring_service(service: str, request: Request, account_id: str = Query(...), region: str = Query("us-east-1")):
+    if service not in MONITOR_SERVICES: raise HTTPException(404, f"Service {service} not supported")
+    session = getattr(request.state, "session", None)
+    if not session: raise HTTPException(401, "AWS session not found")
+    func_map = {
+        "cloudwatch_metrics": list_cloudwatch_metrics,
+        "cloudwatch_alarms": list_cloudwatch_alarms,
+        "cloudwatch_logs": list_cloudwatch_logs,
+        "cloudtrail": list_cloudtrail_trails,
+        "config": list_config_rules,
+        "xray": list_xray_groups
+    }
+    resources = func_map[service](session, account_id, region)
+    return ServiceListResponse(account_id=account_id, region=region, service=service, resources=resources, total=len(resources))
 
-        elif service_name == "config":
-            config_client = creds.client("config", region_name=region)
-            if ids:
-                resp = config_client.describe_config_rules(ConfigRuleNames=ids)
-            else:
-                resp = config_client.describe_config_rules()
-            details = resp.get("ConfigRules", [])
+@router.post("/monitoring/{service}/detail", response_model=ResourceDetailResponse)
+async def get_monitoring_detail(service: str, request: Request, payload: ResourceDetailRequest, account_id: str = Query(...), region: str = Query("us-east-1")):
+    if service not in MONITOR_SERVICES: raise HTTPException(404, f"Service {service} not supported")
+    session = getattr(request.state, "session", None)
+    if not session: raise HTTPException(401, "AWS session not found")
 
-        elif service_name == "sns":
-            sns_client = creds.client("sns", region_name=region)
-            if ids:
-                for topic_arn in ids:
-                    resp = sns_client.get_topic_attributes(TopicArn=topic_arn)
-                    details.append(resp)
-            else:
-                resp = sns_client.list_topics()
-                details = resp.get("Topics", [])
+    func_map = {
+        "cloudwatch_alarms": analyze_cloudwatch_alarm,
+        "cloudtrail": analyze_cloudtrail_trail,
+        "config": analyze_config_rule,
+        "xray": analyze_xray_group
+    }
 
-        else:
-            return {"statusCode": 400, "statusMessage": "Invalid service"}
+    list_map = {
+        "cloudwatch_alarms": list_cloudwatch_alarms,
+        "cloudtrail": list_cloudtrail_trails,
+        "config": list_config_rules,
+        "xray": list_xray_groups,
+        "cloudwatch_metrics": list_cloudwatch_metrics,
+        "cloudwatch_logs": list_cloudwatch_logs
+    }
 
-        return {
-            "statusCode": 200,
-            "statusMessage": "Success",
-            "service_name": service_name,
-            "details": details
-        }
+    # check if resource exists
+    resources = list_map[service](session, account_id, region)
+    if payload.resource_id not in resources:
+        raise HTTPException(404, f"{service} resource '{payload.resource_id}' not found")
 
-    except ClientError as e:
-        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
-    except Exception as e:
-        return {"statusCode": 500, "statusMessage": "Error", "error": str(e)}
+    # detailed config + recommendations
+    if service in func_map:
+        details = func_map[service](session.client(service.replace("_metrics","").replace("_alarms","").replace("_logs",""), region_name=region), payload.resource_id)
+    else:
+        # metrics/log groups: no detailed analysis, just name
+        details = {"configuration": {"name": payload.resource_id}, "recommendations": []}
 
-
-# --- Separate endpoint for Alarms (like compute format) ---
-@router.get("/monitoring/alarms/list")
-def list_alarms(request: Request, region: str = Query("us-east-1")):
-    try:
-        creds = request.state.session
-        cw_client = creds.client("cloudwatch", region_name=region)
-        resp = cw_client.describe_alarms()
-        return {"service_name": "cloudwatch-alarms", "resources": resp.get("MetricAlarms", [])}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@router.get("/monitoring/alarms")
-def describe_alarms(request: Request, region: str = Query("us-east-1"), ids: Optional[List[str]] = Query(None)):
-    try:
-        creds = request.state.session
-        cw_client = creds.client("cloudwatch", region_name=region)
-        if ids:
-            resp = cw_client.describe_alarms(AlarmNames=ids)
-        else:
-            resp = cw_client.describe_alarms()
-        return {"service_name": "cloudwatch-alarms", "details": resp.get("MetricAlarms", [])}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# --- Separate endpoint for SNS (like compute format) ---
-@router.get("/monitoring/sns/list")
-def list_sns_topics(request: Request, region: str = Query("us-east-1")):
-    try:
-        creds = request.state.session
-        sns_client = creds.client("sns", region_name=region)
-        resp = sns_client.list_topics()
-        return {"service_name": "sns", "resources": resp.get("Topics", [])}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@router.get("/monitoring/sns")
-def describe_sns_topics(request: Request, region: str = Query("us-east-1"), ids: Optional[List[str]] = Query(None)):
-    try:
-        creds = request.state.session
-        sns_client = creds.client("sns", region_name=region)
-        details = []
-        if ids:
-            for topic_arn in ids:
-                resp = sns_client.get_topic_attributes(TopicArn=topic_arn)
-                details.append(resp)
-        else:
-            resp = sns_client.list_topics()
-            details = resp.get("Topics", [])
-        return {"service_name": "sns", "details": details}
-    except Exception as e:
-        return {"error": str(e)}
+    return ResourceDetailResponse(account_id=account_id, region=region, service=service, resource=payload.resource_id, details=details)

@@ -1,183 +1,261 @@
-from fastapi import APIRouter, Query, Request, HTTPException
-from pydantic import BaseModel
+"""
+Logs Category API Router
+Handles listing and describing AWS logging-related resources
+(CloudWatch Logs, VPC Flow Logs, CloudTrail, S3 Access Logs, ELB Access Logs)
+"""
+
+from fastapi import APIRouter, Query, HTTPException, Request
+from pydantic import BaseModel, Field, validator
+from typing import List, Dict, Any, Optional
 from botocore.exceptions import BotoCoreError, ClientError
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ----------------------------
-# GET /logs -> List logging services
+# Constants
 # ----------------------------
-@router.get("/logs")
-def list_logging_services():
-    return {
-        "services": [
-            "cloudwatch-logs",
-            "vpc-flow-logs",
-            "cloudtrail-logs",
-            "s3-access-logs",
-            "elb-access-logs"
-        ]
-    }
+SUPPORTED_SERVICES = [
+    "cloudwatch-logs",
+    "vpc-flow-logs",
+    "cloudtrail-logs",
+    "s3-access-logs",
+    "elb-access-logs"
+]
 
-# ----------------------------
-# GET /logs/{resource} -> List logs in a region (optionally vpc-wise)
-# ----------------------------
-@router.get("/logs/{resource}")
-def list_logging_resources(
-    resource: str,
-    request: Request,
-    account_id: str = Query(None),
-    region: str = "us-east-1",
-    vpc_id: str = Query(None)
-):
-    session = request.state.session
 
+class ResourceIds(BaseModel):
+    """Request model for describing specific resources"""
+    ids: List[str] = Field(..., min_items=1, max_items=50, description="List of resource IDs/names")
+    region: str = Field(default="us-east-1", description="AWS region")
+
+    @validator('ids')
+    def validate_ids(cls, v):
+        if not all(isinstance(_id, str) and _id.strip() for _id in v):
+            raise ValueError("All IDs must be non-empty strings")
+        return v
+
+
+def get_aws_client(session, service: str, region: str):
+    """Create AWS client with error handling"""
     try:
-        if resource == "cloudwatch-logs":
-            logs = session.client("logs", region_name=region)
-            log_groups = logs.describe_log_groups().get("logGroups", [])
-            return {"service": resource, "log_groups": log_groups}
+        return session.client(service, region_name=region)
+    except Exception as e:
+        logger.error(f"Failed to create {service} client: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create AWS client: {str(e)}")
 
-        elif resource == "vpc-flow-logs":
-            ec2 = session.client("ec2", region_name=region)
-            filters = [{"Name": "resource-id", "Values": [vpc_id]}] if vpc_id else []
-            flow_logs = ec2.describe_flow_logs(Filters=filters).get("FlowLogs", [])
-            return {"service": resource, "flow_logs": flow_logs}
 
-        elif resource == "cloudtrail-logs":
-            ct = session.client("cloudtrail", region_name=region)
-            trails = ct.describe_trails().get("trailList", [])
-            return {"service": resource, "trails": trails}
+def handle_aws_error(e: Exception, context: str = ""):
+    """Centralized AWS error handling with appropriate HTTP status codes."""
+    if isinstance(e, ClientError):
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_msg = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(f"AWS Error in {context}: {error_code} - {error_msg}")
 
-        elif resource == "s3-access-logs":
-            s3 = session.client("s3", region_name=region)
-            buckets = s3.list_buckets().get("Buckets", [])
-            owner = s3.list_buckets().get("Owner", {})
-            bucket_logs = []
-            for b in buckets:
-                try:
-                    logging_info = s3.get_bucket_logging(Bucket=b["Name"])
-                    versioning = s3.get_bucket_versioning(Bucket=b["Name"]).get("Status", "None")
-                    bucket_region = s3.get_bucket_location(Bucket=b["Name"]).get("LocationConstraint") or "us-east-1"
-                    bucket_logs.append({
-                        "BucketName": b["Name"],
-                        "TargetBucket": logging_info.get("LoggingEnabled", {}).get("TargetBucket"),
-                        "TargetPrefix": logging_info.get("LoggingEnabled", {}).get("TargetPrefix"),
-                        "Versioning": versioning,
-                        "Region": bucket_region,
-                        "Owner": {
-                            "DisplayName": owner.get("DisplayName"),
-                            "ID": owner.get("ID")
-                        }
-                    })
-                except Exception:
-                    continue
-            return {"service": resource, "bucket_logs": bucket_logs}
+        status_code = 500
+        if error_code in ["AccessDenied", "UnauthorizedOperation"]:
+            status_code = 403
+        elif error_code in ["InvalidParameterValue", "ValidationError", "InvalidParameterCombination"]:
+            status_code = 400
+        elif error_code in ["ResourceNotFoundException"]:
+            status_code = 404
 
-        elif resource == "elb-access-logs":
-            elb = session.client("elb", region_name=region)
-            lbs = elb.describe_load_balancers().get("LoadBalancerDescriptions", [])
-            lb_logs = []
-            for lb in lbs:
-                lb_logs.append({
-                    "LoadBalancerName": lb["LoadBalancerName"],
-                    "Scheme": lb["Scheme"],
-                    "DNSName": lb["DNSName"],
-                    "AccessLog": lb.get("AccessLog", {})
-                })
-            return {"service": resource, "elb_logs": lb_logs}
-
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Supported services: cloudwatch-logs, vpc-flow-logs, cloudtrail-logs, s3-access-logs, elb-access-logs"
-            )
-
-    except (BotoCoreError, ClientError) as e:
+        raise HTTPException(status_code=status_code, detail=f"{error_code}: {error_msg}")
+    else:
+        logger.error(f"Unexpected error in {context}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ----------------------------
-# POST /logging/{resource} -> Describe specific logs
+# API ENDPOINTS
 # ----------------------------
-class ResourceIds(BaseModel):
-    ids: list[str]
 
-@router.post("/logs/{resource}")
-def describe_specific_logging_resource(
-    resource: str,
-    resource_ids: ResourceIds,
+@router.get("/logs", summary="List all logging services in the category")
+def list_logging_services(
     request: Request,
-    region: str = "us-east-1"
+    account_id: Optional[str] = Query(None, description="AWS Account ID"),
+    region: Optional[str] = Query(None, description="AWS Region")
 ):
-    session = request.state.session
-    simplified = []
+    """
+    Step 1: List all available logging services in the category.
+    """
+    try:
+        _ = request.state.session  # Validate session exists
+        return {
+            "category": "logs",
+            "services": SUPPORTED_SERVICES,
+            "service_descriptions": {
+                "cloudwatch-logs": "Amazon CloudWatch Logs groups and streams",
+                "vpc-flow-logs": "VPC Flow Logs for network traffic",
+                "cloudtrail-logs": "AWS CloudTrail trails and events",
+                "s3-access-logs": "S3 Bucket access logs",
+                "elb-access-logs": "Classic ELB access logs"
+            },
+            "account_id": account_id,
+            "region": region or "Not specified"
+        }
+    except AttributeError:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
+@router.get("/logs/{service_name}", summary="List all resources for a logging service")
+def list_logging_resources(
+    service_name: str,
+    request: Request,
+    account_id: Optional[str] = Query(None, description="AWS Account ID"),
+    region: str = Query(default="us-east-1", description="AWS Region"),
+    vpc_id: Optional[str] = Query(None, description="Optional VPC ID for flow logs")
+):
+    """
+    Step 2: List all resources for a specific logging service.
+    """
+    service_name = service_name.lower()
+    if service_name not in SUPPORTED_SERVICES:
+        raise HTTPException(status_code=400, detail=f"Service '{service_name}' not supported. Supported: {SUPPORTED_SERVICES}")
 
     try:
-        if resource == "cloudwatch-logs":
-            logs = session.client("logs", region_name=region)
-            for lg_name in resource_ids.ids:
+        session = request.state.session
+
+        if service_name == "cloudwatch-logs":
+            client = get_aws_client(session, "logs", region)
+            groups = client.describe_log_groups().get("logGroups", [])
+            resources = groups
+
+        elif service_name == "vpc-flow-logs":
+            client = get_aws_client(session, "ec2", region)
+            filters = [{"Name": "resource-id", "Values": [vpc_id]}] if vpc_id else []
+            flow_logs = client.describe_flow_logs(Filters=filters).get("FlowLogs", [])
+            resources = flow_logs
+
+        elif service_name == "cloudtrail-logs":
+            client = get_aws_client(session, "cloudtrail", region)
+            trails = client.describe_trails().get("trailList", [])
+            resources = trails
+
+        elif service_name == "s3-access-logs":
+            client = get_aws_client(session, "s3", region)
+            buckets = client.list_buckets().get("Buckets", [])
+            resources = []
+            for b in buckets:
                 try:
-                    lg = logs.describe_log_groups(logGroupNamePrefix=lg_name)["logGroups"]
-                    simplified.extend(lg)
+                    logging_info = client.get_bucket_logging(Bucket=b["Name"]).get("LoggingEnabled", {})
+                    versioning = client.get_bucket_versioning(Bucket=b["Name"]).get("Status", "None")
+                    bucket_region = client.get_bucket_location(Bucket=b["Name"]).get("LocationConstraint") or "us-east-1"
+                    resources.append({
+                        "BucketName": b["Name"],
+                        "Logging": logging_info,
+                        "Versioning": versioning,
+                        "Region": bucket_region
+                    })
                 except Exception:
                     continue
 
-        elif resource == "vpc-flow-logs":
-            ec2 = session.client("ec2", region_name=region)
-            flow_logs = ec2.describe_flow_logs(Filters=[{"Name": "resource-id", "Values": resource_ids.ids}]).get("FlowLogs", [])
-            simplified.extend(flow_logs)
+        elif service_name == "elb-access-logs":
+            client = get_aws_client(session, "elb", region)
+            lbs = client.describe_load_balancers().get("LoadBalancerDescriptions", [])
+            resources = [
+                {
+                    "LoadBalancerName": lb["LoadBalancerName"],
+                    "Scheme": lb["Scheme"],
+                    "DNSName": lb["DNSName"]
+                }
+                for lb in lbs
+            ]
 
-        elif resource == "cloudtrail-logs":
-            ct = session.client("cloudtrail", region_name=region)
-            trails = ct.describe_trails()["trailList"]
+        return {
+            "category": "logs",
+            "service": service_name,
+            "account_id": account_id,
+            "region": region,
+            "total_resources": len(resources),
+            "resources": resources
+        }
+
+    except (BotoCoreError, ClientError) as e:
+        handle_aws_error(e, f"list_logging_resources/{service_name}")
+    except AttributeError:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
+@router.post("/logs/{service_name}", summary="Get detailed info for specific logging resources")
+def describe_specific_logging_resources(
+    service_name: str,
+    request: Request,
+    resource_ids: ResourceIds,
+    account_id: Optional[str] = Query(None, description="AWS Account ID")
+):
+    """
+    Step 3: Get detailed information for specific logging resources.
+    """
+    service_name = service_name.lower()
+    if service_name not in SUPPORTED_SERVICES:
+        raise HTTPException(status_code=400, detail=f"Service '{service_name}' not supported. Supported: {SUPPORTED_SERVICES}")
+
+    try:
+        session = request.state.session
+        details = []
+
+        if service_name == "cloudwatch-logs":
+            client = get_aws_client(session, "logs", resource_ids.region)
+            for lg_name in resource_ids.ids:
+                try:
+                    lg = client.describe_log_groups(logGroupNamePrefix=lg_name)["logGroups"]
+                    details.extend(lg)
+                except Exception:
+                    continue
+
+        elif service_name == "vpc-flow-logs":
+            client = get_aws_client(session, "ec2", resource_ids.region)
+            flow_logs = client.describe_flow_logs(Filters=[{"Name": "resource-id", "Values": resource_ids.ids}]).get("FlowLogs", [])
+            details.extend(flow_logs)
+
+        elif service_name == "cloudtrail-logs":
+            client = get_aws_client(session, "cloudtrail", resource_ids.region)
+            trails = client.describe_trails().get("trailList", [])
             for t in trails:
                 if t["Name"] in resource_ids.ids:
-                    simplified.append(t)
+                    details.append(t)
 
-        elif resource == "s3-access-logs":
-            s3 = session.client("s3", region_name=region)
-            owner = s3.list_buckets().get("Owner", {})
+        elif service_name == "s3-access-logs":
+            client = get_aws_client(session, "s3", resource_ids.region)
             for b_name in resource_ids.ids:
                 try:
-                    logging_info = s3.get_bucket_logging(Bucket=b_name).get("LoggingEnabled", {})
-                    versioning = s3.get_bucket_versioning(Bucket=b_name).get("Status", "None")
-                    bucket_region = s3.get_bucket_location(Bucket=b_name).get("LocationConstraint") or "us-east-1"
+                    logging_info = client.get_bucket_logging(Bucket=b_name).get("LoggingEnabled", {})
+                    versioning = client.get_bucket_versioning(Bucket=b_name).get("Status", "None")
+                    bucket_region = client.get_bucket_location(Bucket=b_name).get("LocationConstraint") or "us-east-1"
                     if logging_info:
-                        simplified.append({
+                        details.append({
                             "BucketName": b_name,
-                            "TargetBucket": logging_info.get("TargetBucket"),
-                            "TargetPrefix": logging_info.get("TargetPrefix"),
+                            "Logging": logging_info,
                             "Versioning": versioning,
-                            "Region": bucket_region,
-                            "Owner": {
-                                "DisplayName": owner.get("DisplayName"),
-                                "ID": owner.get("ID")
-                            }
+                            "Region": bucket_region
                         })
                 except Exception:
                     continue
 
-        elif resource == "elb-access-logs":
-            elb = session.client("elb", region_name=region)
-            lbs = elb.describe_load_balancers()["LoadBalancerDescriptions"]
+        elif service_name == "elb-access-logs":
+            client = get_aws_client(session, "elb", resource_ids.region)
+            lbs = client.describe_load_balancers()["LoadBalancerDescriptions"]
             for lb in lbs:
                 if lb["LoadBalancerName"] in resource_ids.ids:
-                    simplified.append({
+                    details.append({
                         "LoadBalancerName": lb["LoadBalancerName"],
                         "Scheme": lb["Scheme"],
                         "DNSName": lb["DNSName"],
                         "AccessLog": lb.get("AccessLog", {})
                     })
 
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Supported services: cloudwatch-logs, vpc-flow-logs, cloudtrail-logs, s3-access-logs, elb-access-logs"
-            )
-
-        return {"service": resource, "resources": simplified}
+        return {
+            "category": "logs",
+            "service": service_name,
+            "account_id": account_id,
+            "region": resource_ids.region,
+            "total_resources": len(details),
+            "resources": details
+        }
 
     except (BotoCoreError, ClientError) as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        handle_aws_error(e, f"describe_specific_logging_resources/{service_name}")
+    except AttributeError:
+        raise HTTPException(status_code=401, detail="Authentication required")

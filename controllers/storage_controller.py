@@ -1,160 +1,335 @@
-from fastapi import APIRouter, Query, HTTPException, Request
-import boto3, json
-from typing import List, Dict, Optional
+from fastapi import APIRouter, Request, HTTPException, Query
+from pydantic import BaseModel
 from botocore.exceptions import ClientError
+from typing import Dict, Any, List
+from datetime import datetime
+import logging
+import time
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-@router.get("/storage")
-def list_storage(request: Request, service: Optional[str] = Query(None), region: Optional[str] = Query("us-east-1")):
-    services = {}
-    session = request.state.session
-    if service == "s3" or service is None:
-        services["s3"] = list_s3_buckets(region, session)
-    
-    if service == "efs" or service is None:
-        services["efs"] = list_efs_file_systems(region, session)
-    
-    if service == "ebs" or service is None:
-        services["ebs"] = list_ebs_volumes(region, session)
 
-    return services
+STORAGE_SERVICES = ["s3", "ebs", "efs"]
 
-def list_s3_buckets(region: str, session) -> List[str]:
+
+CACHE: Dict[Any, Dict[str, Any]] = {}
+CACHE_TTL = 300
+
+def get_from_cache(account_id: str, region: str, service: str):
+    key = (account_id, region, service)
+    entry = CACHE.get(key)
+    if entry and (time.time() - entry["timestamp"] < CACHE_TTL):
+        return entry["data"]
+    return None
+
+def set_cache(account_id: str, region: str, service: str, data: Any):
+    key = (account_id, region, service)
+    CACHE[key] = {"data": data, "timestamp": time.time()}
+
+
+# Models
+
+class ResourceDetailRequest(BaseModel):
+    resource_id: str
+
+class StorageListResponse(BaseModel):
+    account_id: str
+    region: str
+    s3: List[str] = []
+    ebs: List[str] = []
+    efs: List[str] = []
+
+class ServiceListResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resources: List[str] = []
+    total: int
+
+class Recommendation(BaseModel):
+    type: str
+    severity: str
+    message: str
+
+class S3Detail(BaseModel):
+    name: str
+    public_access_block: dict = {}
+    encryption: dict = {}
+    versioning: str
+    logging: bool
+    recommendations: List[Recommendation] = []
+
+class EBSDetail(BaseModel):
+    id: str
+    size: int
+    type: str
+    state: str
+    encrypted: bool
+    recommendations: List[Recommendation] = []
+
+class EFSDetail(BaseModel):
+    id: str
+    performance_mode: str
+    encrypted: bool
+    throughput_mode: str
+    recommendations: List[Recommendation] = []
+
+class ResourceDetailResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resource: str
+    details: dict
+
+# Helper Functions
+
+def list_s3_buckets(session, account_id: str, region: str) -> List[str]:
+    cached = get_from_cache(account_id, region, "s3")
+    if cached is not None:
+        return cached
+
     s3 = session.client("s3")
-    result = []
+    buckets = []
     try:
-        buckets = s3.list_buckets()
-        for bucket in buckets['Buckets']:
+        for bucket in s3.list_buckets()["Buckets"]:
             try:
-                location = s3.get_bucket_location(Bucket=bucket['Name'])['LocationConstraint']
-                if location is None:
-                    location = "us-east-1"
-                if location == region:
-                    result.append(bucket['Name'])
-            except Exception:
+                location = s3.get_bucket_location(Bucket=bucket["Name"])
+                bucket_region = location.get("LocationConstraint") or "us-east-1"
+                if bucket_region == region:
+                    buckets.append(bucket["Name"])
+            except ClientError:
                 continue
-    except Exception as e:
-        return [f"Error listing S3 buckets: {str(e)}"]
-    return result
+    except ClientError as e:
+        logger.error(f"Error listing S3 buckets: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-def list_efs_file_systems(region: str, session) -> List[str]:
-    efs = session.client('efs', region_name=region)
+    set_cache(account_id, region, "s3", buckets)
+    return buckets
+
+def list_ebs_volumes(session, account_id: str, region: str) -> List[str]:
+    cached = get_from_cache(account_id, region, "ebs")
+    if cached is not None:
+        return cached
+
+    ec2 = session.client("ec2", region_name=region)
     try:
-        fs = efs.describe_file_systems()
-        return [fs_item['FileSystemId'] for fs_item in fs['FileSystems']]
-    except Exception as e:
-        return [f"Error listing EFS: {str(e)}"]
+        volumes = ec2.describe_volumes()["Volumes"]
+        vol_ids = [vol["VolumeId"] for vol in volumes]
+        set_cache(account_id, region, "ebs", vol_ids)
+        return vol_ids
+    except ClientError as e:
+        logger.error(f"Error listing EBS volumes: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-def list_ebs_volumes(region: str, session) -> List[Dict]:
-    ec2 = session.client('ec2', region_name=region)
+def list_efs_filesystems(session, account_id: str, region: str) -> List[str]:
+    cached = get_from_cache(account_id, region, "efs")
+    if cached is not None:
+        return cached
+
+    efs = session.client("efs", region_name=region)
     try:
-        volumes = ec2.describe_volumes()
-        return [
-            {
-                "VolumeId": vol["VolumeId"],
-                "State": vol["State"],
-                "AvailabilityZone": vol["AvailabilityZone"]
-            }
-            for vol in volumes['Volumes']
-        ]
-    except Exception as e:
-        return [{"Error": str(e)}]
+        filesystems = efs.describe_file_systems()["FileSystems"]
+        fs_ids = [fs["FileSystemId"] for fs in filesystems]
+        set_cache(account_id, region, "efs", fs_ids)
+        return fs_ids
+    except ClientError as e:
+        logger.error(f"Error listing EFS filesystems: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/audit")
-async def service_audit(request: Request):
-    audit_details = {}
-    body = await request.json()
-    print(body)
-    exit()
-    bucket = body.get("bucket_name", "").strip()
-    region = body.get("region_name", "").strip()
-    service = body.get("service", "").strip()
-    if not bucket or not region:
-        raise HTTPException(status_code=400, detail="'bucket_name','region_name' and 'service' are required.")
-    if service == "s3" or service is None:
-        audit_details = audit_bucket(bucket, region)
-    
-    return audit_details
-
-def safe_call(func, error_msg, *args, **kwargs):
+# Analysis Functions
+def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
+    details = {"name": bucket_name, "recommendations": []}
     try:
-        return func(*args, **kwargs), None
-    except ClientError:
-        return None, error_msg
-
-def audit_bucket(bucket, region):
-    s3 = boto3.client("s3")
-
-    compliant = []
-    non_compliant = []
-    unknown = []
-
-    def record(result, ok_msg, fail_msg, check_fn):
-        if result is None:
-            unknown.append(fail_msg)
-        elif check_fn(result):
-            compliant.append(ok_msg)
-        else:
-            non_compliant.append(fail_msg)
-
-    # 1. Public Access
-    data, err = safe_call(s3.get_bucket_policy_status, "Could not determine bucket public access policy.", Bucket=bucket)
-    record(data, "Bucket policy does not allow public access.", "Bucket policy allows public access.", 
-        lambda r: not r.get("PolicyStatus", {}).get("IsPublic", True))
-
-    # 2. Default Encryption
-    data, err = safe_call(s3.get_bucket_encryption, "Default encryption is NOT enabled.", Bucket=bucket)
-    record(data, "Default encryption is enabled.", "Default encryption is NOT enabled.", 
-        lambda r: bool(r))
-
-    # 3. ACLs
-    data, err = safe_call(s3.get_bucket_acl, "Could not check ACLs.", Bucket=bucket)
-    record(data, "No public ACLs.", "Bucket has public ACL permissions.", 
-        lambda r: all(g.get("Grantee", {}).get("URI") not in [
-            "http://acs.amazonaws.com/groups/global/AllUsers",
-            "http://acs.amazonaws.com/groups/global/AuthenticatedUsers"
-        ] for g in r.get("Grants", [])))
-
-    # 4. Policy Wildcards
-    data, err = safe_call(s3.get_bucket_policy, "No bucket policy found or unable to fetch.", Bucket=bucket)
-    def has_no_wildcards(policy):
         try:
-            doc = json.loads(policy["Policy"])
-            for stmt in doc.get("Statement", []):
-                if stmt.get("Principal") == "*" or stmt.get("Action") == "*":
-                    return False
-            return True
-        except:
-            return False
-    record(data, "Bucket policy avoids wildcards.", "Bucket policy uses wildcard * — security risk.", has_no_wildcards)
+            pab = s3_client.get_public_access_block(Bucket=bucket_name)
+            details["public_access_block"] = pab["PublicAccessBlockConfiguration"]
+        except ClientError:
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "critical",
+                "message": "Public access block not configured"
+            })
+        try:
+            enc = s3_client.get_bucket_encryption(Bucket=bucket_name)
+            details["encryption"] = enc.get("ServerSideEncryptionConfiguration", {})
+        except ClientError:
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "high",
+                "message": "Bucket encryption not enabled"
+            })
+        ver = s3_client.get_bucket_versioning(Bucket=bucket_name)
+        details["versioning"] = ver.get("Status", "Disabled")
+        if details["versioning"] != "Enabled":
+            details["recommendations"].append({
+                "type": "data_protection",
+                "severity": "medium",
+                "message": "Versioning not enabled"
+            })
+        log = s3_client.get_bucket_logging(Bucket=bucket_name)
+        details["logging"] = "LoggingEnabled" in log
+        if "LoggingEnabled" not in log:
+            details["recommendations"].append({
+                "type": "monitoring",
+                "severity": "medium",
+                "message": "Server access logging not enabled"
+            })
+    except Exception as e:
+        logger.error(f"Error analyzing S3 bucket {bucket_name}: {str(e)}")
+    return details
 
-    # 5. Versioning
-    data, err = safe_call(s3.get_bucket_versioning, "Could not check versioning.", Bucket=bucket)
-    record(data, "Versioning is enabled.", "Versioning is NOT enabled.", 
-        lambda r: r.get("Status") == "Enabled")
+def analyze_ebs_volume(ec2_client, volume_id: str) -> Dict[str, Any]:
+    details = {"id": volume_id, "recommendations": []}
+    try:
+        vol = ec2_client.describe_volumes(VolumeIds=[volume_id])["Volumes"][0]
+        details.update({
+            "size": vol["Size"],
+            "type": vol["VolumeType"],
+            "encrypted": vol["Encrypted"],
+            "state": vol["State"],
+        })
+        if not vol["Encrypted"]:
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "high",
+                "message": "Volume not encrypted"
+            })
+        if not vol["Attachments"]:
+            details["recommendations"].append({
+                "type": "cost_optimization",
+                "severity": "high",
+                "message": "Unattached volume"
+            })
+        if vol["VolumeType"] == "gp2":
+            details["recommendations"].append({
+                "type": "performance",
+                "severity": "low",
+                "message": "Consider migrating to gp3"
+            })
+    except Exception as e:
+        logger.error(f"Error analyzing EBS volume {volume_id}: {str(e)}")
+    return details
 
-    # 6. Logging
-    data, err = safe_call(s3.get_bucket_logging, "Could not check access logging.", Bucket=bucket)
-    record(data, "Access logging is enabled.", "Access logging is NOT enabled.", 
-        lambda r: "LoggingEnabled" in r)
+def analyze_efs_filesystem(efs_client, fs_id: str) -> Dict[str, Any]:
+    details = {"id": fs_id, "recommendations": []}
+    try:
+        fs = efs_client.describe_file_systems(FileSystemId=fs_id)["FileSystems"][0]
+        details.update({
+            "performance_mode": fs["PerformanceMode"],
+            "encrypted": fs["Encrypted"],
+            "throughput_mode": fs["ThroughputMode"],
+        })
+        if not fs["Encrypted"]:
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "high",
+                "message": "Filesystem not encrypted"
+            })
+        if fs["PerformanceMode"] == "generalPurpose":
+            details["recommendations"].append({
+                "type": "performance",
+                "severity": "low",
+                "message": "Consider maxIO for throughput workloads"
+            })
+        if not fs.get("LifecyclePolicies"):
+            details["recommendations"].append({
+                "type": "cost_optimization",
+                "severity": "medium",
+                "message": "No lifecycle policy configured"
+            })
+    except Exception as e:
+        logger.error(f"Error analyzing EFS filesystem {fs_id}: {str(e)}")
+    return details
 
-    # 7. MFA Delete
-    data, err = safe_call(s3.get_bucket_versioning, "Could not determine MFA Delete status.", Bucket=bucket)
-    record(data, "MFA Delete is enabled.", "MFA Delete is NOT enabled.", 
-        lambda r: r.get("MFADelete") == "Enabled")
+# Routes
 
-    # 8. Ownership Controls
-    data, err = safe_call(s3.get_bucket_ownership_controls, "Could not check object ownership.", Bucket=bucket)
-    record(data, "Object ownership is enforced (ACLs disabled).", "Object ownership is not enforced.", 
-        lambda r: any(rule.get("ObjectOwnership") == "BucketOwnerEnforced" for rule in r.get("OwnershipControls", {}).get("Rules", [])))
+@router.get("/storage", response_model=StorageListResponse, summary="List all storage resources")
+async def list_all_storage(
+    request: Request,
+    account_id: str = Query(..., description="AWS account ID"),
+    region: str = Query("us-east-1", description="AWS region")
+):
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found")
 
-    return {
-        "bucket": bucket,
-        "region": region,
-        "result": {
-            "compliant": compliant,
-            "non_compliant": non_compliant,
-            "unknown": unknown
-        }
-    }
+    return StorageListResponse(
+        account_id=account_id,
+        region=region,
+        s3=list_s3_buckets(session, account_id, region),
+        ebs=list_ebs_volumes(session, account_id, region),
+        efs=list_efs_filesystems(session, account_id, region)
+    )
+
+@router.get("/storage/{service}", response_model=ServiceListResponse, summary="List resources for a specific service")
+async def list_service_storage(
+    service: str,
+    request: Request,
+    account_id: str = Query(..., description="AWS account ID"),
+    region: str = Query("us-east-1", description="AWS region")
+):
+    if service not in STORAGE_SERVICES:
+        raise HTTPException(404, f"Service {service} not supported")
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found")
+
+    if service == "s3":
+        resources = list_s3_buckets(session, account_id, region)
+    elif service == "ebs":
+        resources = list_ebs_volumes(session, account_id, region)
+    elif service == "efs":
+        resources = list_efs_filesystems(session, account_id, region)
+
+    return ServiceListResponse(
+        account_id=account_id,
+        region=region,
+        service=service,
+        resources=resources,
+        total=len(resources)
+    )
+
+@router.post("/storage/{service}/detail", response_model=ResourceDetailResponse, summary="Get detailed resource info")
+async def get_storage_detail(
+    service: str,
+    request: Request,
+    payload: ResourceDetailRequest,
+    account_id: str = Query(..., description="AWS account ID"),
+    region: str = Query("us-east-1", description="AWS region")
+):
+    if service not in STORAGE_SERVICES:
+        raise HTTPException(404, f"Service {service} not supported")
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(401, "AWS session not found")
+
+    # Check if resource exists in the region
+    if service == "s3":
+        s3 = session.client("s3", region_name=region)
+        buckets = list_s3_buckets(session, account_id, region)
+        if payload.resource_id not in buckets:
+            raise HTTPException(404, f"S3 bucket '{payload.resource_id}' not found in region {region}")
+        details = analyze_s3_bucket(s3, payload.resource_id)
+
+    elif service == "ebs":
+        ec2 = session.client("ec2", region_name=region)
+        volumes = list_ebs_volumes(session, account_id, region)
+        if payload.resource_id not in volumes:
+            raise HTTPException(404, f"EBS volume '{payload.resource_id}' not found in region {region}")
+        details = analyze_ebs_volume(ec2, payload.resource_id)
+
+    elif service == "efs":
+        efs = session.client("efs", region_name=region)
+        filesystems = list_efs_filesystems(session, account_id, region)
+        if payload.resource_id not in filesystems:
+            raise HTTPException(404, f"EFS filesystem '{payload.resource_id}' not found in region {region}")
+        details = analyze_efs_filesystem(efs, payload.resource_id)
+
+    return ResourceDetailResponse(
+        account_id=account_id,
+        region=region,
+        service=service,
+        resource=payload.resource_id,
+        details=details
+    )
