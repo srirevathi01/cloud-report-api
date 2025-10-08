@@ -269,7 +269,7 @@ def describe_ecs_clusters(client, cluster_names: List[str]) -> List[Dict[str, An
 
 # --- API Endpoints ---
 @router.get("/computev3", summary="List supported compute services")
-def list_compute_services(request: Request):
+def list_compute_services(request: Request, account_id: str = Query(..., description="AWS account ID"),region: str = Query("us-east-1", description="AWS region")):
     """List all compute services supported by the API."""
     try:
         _ = request.state.session  # Validate session exists
@@ -289,6 +289,7 @@ def list_compute_services(request: Request):
 def list_service_resources(
     service_name: str,
     request: Request,
+    account_id: str = Query(..., description="AWS account ID"),
     region: str = Query(default="us-east-1", description="AWS region")
 ):
     """List all resources under a specific compute service."""
@@ -339,7 +340,7 @@ def list_service_resources(
 
 
 @router.post("/computev3/{service_name}", summary="Describe specific resources")
-def describe_resources(service_name: str, request: Request, body: ResourceRequest):
+def describe_resources(service_name: str, request: Request, body: ResourceRequest,account_id: str = Query(..., description="AWS account ID"),region: str = Query("us-east-1", description="AWS region")):
     """Describe specific resources under a compute service (EC2, Lambda, ECS)."""
     service_name = service_name.lower()
     
