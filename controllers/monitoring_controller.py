@@ -6,11 +6,12 @@ import logging, time
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Monitoring Services
+
 MONITOR_SERVICES = [
     "cloudwatch_metrics",
     "cloudwatch_alarms",
     "cloudwatch_logs",
+    "cloudwatch_dashboards",
     "cloudtrail",
     "config",
     "xray"
@@ -31,6 +32,7 @@ def set_mon_cache(account_id: str, region: str, service: str, data: Any):
     key = (account_id, region, service)
     CACHE_MON[key] = {"data": data, "timestamp": time.time()}
 
+
 # Pydantic Models
 class ResourceDetailRequest(BaseModel):
     resource_id: str
@@ -41,6 +43,7 @@ class MonitoringListResponse(BaseModel):
     cloudwatch_metrics: List[str] = Field(default_factory=list)
     cloudwatch_alarms: List[str] = Field(default_factory=list)
     cloudwatch_logs: List[str] = Field(default_factory=list)
+    cloudwatch_dashboards: List[str] = Field(default_factory=list)
     cloudtrail: List[str] = Field(default_factory=list)
     config: List[str] = Field(default_factory=list)
     xray: List[str] = Field(default_factory=list)
@@ -63,6 +66,19 @@ class ResourceDetailResponse(BaseModel):
     service: str
     resource: str
     details: Dict[str, Any]
+
+class CloudDashboardResponse(BaseModel):
+    account_id: str
+    region: str
+    total_metrics: int
+    total_alarms: int
+    total_logs: int
+    total_dashboards: int
+    total_trails: int
+    total_config_rules: int
+    total_xray_groups: int
+    details: Dict[str, List[str]]
+    summary: Dict[str, Any]
 
 # Paginator Functions
 def list_cloudwatch_metrics(session, account_id: str, region: str) -> List[str]:
@@ -101,15 +117,44 @@ def list_cloudwatch_logs(session, account_id: str, region: str) -> List[str]:
     set_mon_cache(account_id, region, "cloudwatch_logs", log_groups)
     return log_groups
 
+def list_cloudwatch_dashboards(session, account_id: str, region: str) -> List[str]:
+    cached = get_mon_cache(account_id, region, "cloudwatch_dashboards")
+    if cached: return cached
+    cw = session.client("cloudwatch", region_name=region)
+    try:
+        dashboards = cw.list_dashboards()
+        dashboard_names = [d["DashboardName"] for d in dashboards.get("DashboardEntries", [])]
+    except ClientError as e:
+        logger.error(f"Error fetching CloudWatch dashboards: {e}")
+        dashboard_names = []
+    set_mon_cache(account_id, region, "cloudwatch_dashboards", dashboard_names)
+    return dashboard_names
+
 def list_cloudtrail_trails(session, account_id: str, region: str) -> List[str]:
     cached = get_mon_cache(account_id, region, "cloudtrail")
-    if cached: return cached
+    if cached: 
+        return cached
     ct = session.client("cloudtrail", region_name=region)
     trails = []
-    paginator = ct.get_paginator("describe_trails")
-    for page in paginator.paginate():
-        for t in page.get("trailList", []):
+    try:
+        paginator = ct.get_paginator("describe_trails")
+        for page in paginator.paginate():
+            for t in page.get("trailList", []):
+                trails.append(t["Name"])
+    except ct.exceptions.OperationNotPermittedException:
+        # fallback — some regions or accounts don’t support paginator
+        resp = ct.describe_trails()
+        for t in resp.get("trailList", []):
             trails.append(t["Name"])
+    except Exception as e:
+        # Handle the specific case where pagination is unsupported
+        if "cannot be paginated" in str(e):
+            resp = ct.describe_trails()
+            for t in resp.get("trailList", []):
+                trails.append(t["Name"])
+        else:
+            logger.error(f"Error listing CloudTrail trails: {e}")
+            trails = []
     set_mon_cache(account_id, region, "cloudtrail", trails)
     return trails
 
@@ -137,7 +182,9 @@ def list_xray_groups(session, account_id: str, region: str) -> List[str]:
     set_mon_cache(account_id, region, "xray", groups)
     return groups
 
+
 # Detailed Analysis Functions
+
 def analyze_cloudwatch_alarm(cw_client, alarm_name: str) -> Dict[str, Any]:
     alarm = cw_client.describe_alarms(AlarmNames=[alarm_name])["MetricAlarms"][0]
     recommendations = []
@@ -166,6 +213,7 @@ def analyze_xray_group(xray_client, group_name: str) -> Dict[str, Any]:
     recommendations = []
     return {"configuration": group, "recommendations": recommendations}
 
+
 # API Routes
 @router.get("/monitoring", response_model=MonitoringListResponse)
 async def list_all_monitoring(request: Request, account_id: str = Query(...), region: str = Query("us-east-1")):
@@ -177,6 +225,7 @@ async def list_all_monitoring(request: Request, account_id: str = Query(...), re
         cloudwatch_metrics=list_cloudwatch_metrics(session, account_id, region),
         cloudwatch_alarms=list_cloudwatch_alarms(session, account_id, region),
         cloudwatch_logs=list_cloudwatch_logs(session, account_id, region),
+        cloudwatch_dashboards=list_cloudwatch_dashboards(session, account_id, region),
         cloudtrail=list_cloudtrail_trails(session, account_id, region),
         config=list_config_rules(session, account_id, region),
         xray=list_xray_groups(session, account_id, region)
@@ -191,6 +240,7 @@ async def list_monitoring_service(service: str, request: Request, account_id: st
         "cloudwatch_metrics": list_cloudwatch_metrics,
         "cloudwatch_alarms": list_cloudwatch_alarms,
         "cloudwatch_logs": list_cloudwatch_logs,
+        "cloudwatch_dashboards": list_cloudwatch_dashboards,
         "cloudtrail": list_cloudtrail_trails,
         "config": list_config_rules,
         "xray": list_xray_groups
@@ -217,19 +267,20 @@ async def get_monitoring_detail(service: str, request: Request, payload: Resourc
         "config": list_config_rules,
         "xray": list_xray_groups,
         "cloudwatch_metrics": list_cloudwatch_metrics,
-        "cloudwatch_logs": list_cloudwatch_logs
+        "cloudwatch_logs": list_cloudwatch_logs,
+        "cloudwatch_dashboards": list_cloudwatch_dashboards
     }
 
     # check if resource exists
     resources = list_map[service](session, account_id, region)
     if payload.resource_id not in resources:
         raise HTTPException(404, f"{service} resource '{payload.resource_id}' not found")
-
+ 
     # detailed config + recommendations
     if service in func_map:
         details = func_map[service](session.client(service.replace("_metrics","").replace("_alarms","").replace("_logs",""), region_name=region), payload.resource_id)
     else:
         # metrics/log groups: no detailed analysis, just name
         details = {"configuration": {"name": payload.resource_id}, "recommendations": []}
-
+ 
     return ResourceDetailResponse(account_id=account_id, region=region, service=service, resource=payload.resource_id, details=details)
