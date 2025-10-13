@@ -245,7 +245,9 @@ def list_service_resources_api(service_name: str, request: Request, account_id: 
         elif service_name == "ecs":
             client = get_aws_client(session, "ecs", region)
             resources = list_ecs_clusters(client)
-        return {"service_name": service_name, "region": region, "resources": resources}
+        return {"service_name": service_name, 
+                "region": region, "resources": resources, 
+                "total": len(resources)}
     except ClientError as e:
         handle_aws_error(e, f"list_service_resources/{service_name}")
 
