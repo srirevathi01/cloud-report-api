@@ -58,6 +58,8 @@ class S3Detail(BaseModel):
     encryption: dict = {}
     versioning: str
     logging: bool
+    lifecycle_policies: List[dict] = []
+    tags: List[dict] = []
     recommendations: List[Recommendation] = []
 
 class EBSDetail(BaseModel):
@@ -66,6 +68,10 @@ class EBSDetail(BaseModel):
     type: str
     state: str
     encrypted: bool
+    iops: int = 0
+    kms_key: str = ""
+    attachments: List[dict] = []
+    tags: List[dict] = []
     recommendations: List[Recommendation] = []
 
 class EFSDetail(BaseModel):
@@ -73,6 +79,9 @@ class EFSDetail(BaseModel):
     performance_mode: str
     encrypted: bool
     throughput_mode: str
+    lifecycle_policies: List[dict] = []
+    mount_targets: List[dict] = []
+    tags: List[dict] = []
     recommendations: List[Recommendation] = []
 
 class ResourceDetailResponse(BaseModel):
@@ -139,8 +148,9 @@ def list_efs_filesystems(session, account_id: str, region: str) -> List[str]:
 
 # Analysis Functions
 def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
-    details = {"name": bucket_name, "recommendations": []}
+    details = {"name": bucket_name, "recommendations": [], "lifecycle_policies": [], "tags": []}
     try:
+        # Public Access Block
         try:
             pab = s3_client.get_public_access_block(Bucket=bucket_name)
             details["public_access_block"] = pab["PublicAccessBlockConfiguration"]
@@ -150,6 +160,8 @@ def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
                 "severity": "critical",
                 "message": "Public access block not configured"
             })
+
+        # Encryption
         try:
             enc = s3_client.get_bucket_encryption(Bucket=bucket_name)
             details["encryption"] = enc.get("ServerSideEncryptionConfiguration", {})
@@ -159,6 +171,8 @@ def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
                 "severity": "high",
                 "message": "Bucket encryption not enabled"
             })
+
+        # Versioning
         ver = s3_client.get_bucket_versioning(Bucket=bucket_name)
         details["versioning"] = ver.get("Status", "Disabled")
         if details["versioning"] != "Enabled":
@@ -167,6 +181,8 @@ def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
                 "severity": "medium",
                 "message": "Versioning not enabled"
             })
+
+        # Logging
         log = s3_client.get_bucket_logging(Bucket=bucket_name)
         details["logging"] = "LoggingEnabled" in log
         if "LoggingEnabled" not in log:
@@ -175,12 +191,63 @@ def analyze_s3_bucket(s3_client, bucket_name: str) -> Dict[str, Any]:
                 "severity": "medium",
                 "message": "Server access logging not enabled"
             })
+
+        # Lifecycle Policies
+        try:
+            lifecycle = s3_client.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+            details["lifecycle_policies"] = lifecycle.get("Rules", [])
+            if not details["lifecycle_policies"]:
+                details["recommendations"].append({
+                    "type": "cost_optimization",
+                    "severity": "medium",
+                    "message": "No lifecycle policy configured"
+                })
+        except ClientError:
+            details["recommendations"].append({
+                "type": "cost_optimization",
+                "severity": "medium",
+                "message": "No lifecycle policy found"
+            })
+
+        # Tags
+        try:
+            tags = s3_client.get_bucket_tagging(Bucket=bucket_name)
+            details["tags"] = tags.get("TagSet", [])
+        except ClientError:
+            pass
+
+        # MFA Delete
+        mfa = ver.get("MFADelete", "Disabled")
+        if mfa != "Enabled":
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "high",
+                "message": "MFA Delete not enabled"
+            })
+
+        # Ownership Controls
+        try:
+            ownership = s3_client.get_bucket_ownership_controls(Bucket=bucket_name)
+            rules = ownership.get("OwnershipControls", {}).get("Rules", [])
+            if not any(r.get("ObjectOwnership") == "BucketOwnerEnforced" for r in rules):
+                details["recommendations"].append({
+                    "type": "security",
+                    "severity": "high",
+                    "message": "Object ownership not enforced"
+                })
+        except ClientError:
+            details["recommendations"].append({
+                "type": "security",
+                "severity": "high",
+                "message": "Could not fetch ownership controls"
+            })
+
     except Exception as e:
         logger.error(f"Error analyzing S3 bucket {bucket_name}: {str(e)}")
     return details
 
 def analyze_ebs_volume(ec2_client, volume_id: str) -> Dict[str, Any]:
-    details = {"id": volume_id, "recommendations": []}
+    details = {"id": volume_id, "recommendations": [], "attachments": [], "tags": [], "kms_key": "", "iops": 0}
     try:
         vol = ec2_client.describe_volumes(VolumeIds=[volume_id])["Volumes"][0]
         details.update({
@@ -188,6 +255,9 @@ def analyze_ebs_volume(ec2_client, volume_id: str) -> Dict[str, Any]:
             "type": vol["VolumeType"],
             "encrypted": vol["Encrypted"],
             "state": vol["State"],
+            "attachments": vol.get("Attachments", []),
+            "kms_key": vol.get("KmsKeyId", ""),
+            "iops": vol.get("Iops", 0)
         })
         if not vol["Encrypted"]:
             details["recommendations"].append({
@@ -195,7 +265,7 @@ def analyze_ebs_volume(ec2_client, volume_id: str) -> Dict[str, Any]:
                 "severity": "high",
                 "message": "Volume not encrypted"
             })
-        if not vol["Attachments"]:
+        if not vol.get("Attachments"):
             details["recommendations"].append({
                 "type": "cost_optimization",
                 "severity": "high",
@@ -207,12 +277,18 @@ def analyze_ebs_volume(ec2_client, volume_id: str) -> Dict[str, Any]:
                 "severity": "low",
                 "message": "Consider migrating to gp3"
             })
+        # Tags
+        try:
+            tags = ec2_client.describe_tags(Filters=[{"Name": "resource-id", "Values": [volume_id]}])
+            details["tags"] = [{"Key": t["Key"], "Value": t["Value"]} for t in tags.get("Tags", [])]
+        except ClientError:
+            pass
     except Exception as e:
         logger.error(f"Error analyzing EBS volume {volume_id}: {str(e)}")
     return details
 
 def analyze_efs_filesystem(efs_client, fs_id: str) -> Dict[str, Any]:
-    details = {"id": fs_id, "recommendations": []}
+    details = {"id": fs_id, "recommendations": [], "lifecycle_policies": [], "mount_targets": [], "tags": []}
     try:
         fs = efs_client.describe_file_systems(FileSystemId=fs_id)["FileSystems"][0]
         details.update({
@@ -232,12 +308,34 @@ def analyze_efs_filesystem(efs_client, fs_id: str) -> Dict[str, Any]:
                 "severity": "low",
                 "message": "Consider maxIO for throughput workloads"
             })
-        if not fs.get("LifecyclePolicies"):
+        # Lifecycle Policies
+        try:
+            lifecycle = efs_client.describe_lifecycle_policies(FileSystemId=fs_id)
+            details["lifecycle_policies"] = lifecycle.get("LifecyclePolicies", [])
+            if not details["lifecycle_policies"]:
+                details["recommendations"].append({
+                    "type": "cost_optimization",
+                    "severity": "medium",
+                    "message": "No lifecycle policy configured"
+                })
+        except ClientError:
             details["recommendations"].append({
                 "type": "cost_optimization",
                 "severity": "medium",
-                "message": "No lifecycle policy configured"
+                "message": "No lifecycle policy found"
             })
+        # Mount Targets
+        try:
+            mts = efs_client.describe_mount_targets(FileSystemId=fs_id)
+            details["mount_targets"] = mts.get("MountTargets", [])
+        except ClientError:
+            pass
+        # Tags
+        try:
+            tags = efs_client.list_tags(FileSystemId=fs_id)
+            details["tags"] = tags.get("Tags", [])
+        except ClientError:
+            pass
     except Exception as e:
         logger.error(f"Error analyzing EFS filesystem {fs_id}: {str(e)}")
     return details
