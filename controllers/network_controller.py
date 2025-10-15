@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Request, Query, HTTPException
 from botocore.exceptions import ClientError, BotoCoreError
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import logging
 import boto3
+import requests
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -27,14 +28,6 @@ class NetworkingListResponse(BaseModel):
     apigateway: List[str]
     elb: List[str]
 
-
-class NetworkingServiceListResponse(BaseModel):
-    account_id: str
-    region: str
-    service: str
-    resources: List[str]
-
-
 class NetworkingResourceDetailResponse(BaseModel):
     account_id: str
     region: str
@@ -42,6 +35,32 @@ class NetworkingResourceDetailResponse(BaseModel):
     resource_id: str
     configuration: Dict[str, Any]
     recommendations: List[Dict[str, Any]]
+
+class NetworkingServiceListResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resources: List[str]
+    subnets: Optional[List[str]] = None
+    internet_gateways: Optional[List[str]] = None
+    security_groups: Optional[List[str]] = None
+    elastic_ips: Optional[List[str]] = None
+    nat_gateways: Optional[List[str]] = None
+    network_interfaces: Optional[List[str]] = None
+    target_groups: Optional[List[str]] = None
+    transit_gateways: Optional[List[str]] = None
+    bandwidth_usage: Optional[Dict[str, Any]] = None
+
+class Route53ServiceListResponse(NetworkingServiceListResponse):
+    hosted_zones: Optional[List[str]] = None
+    dnssec_enabled: Optional[Dict[str, bool]] = None
+    record_counts: Optional[Dict[str, int]] = None
+    wildcard_records: Optional[Dict[str, List[str]]] = None
+    health_checks: Optional[List[str]] = None
+    open_tcp_endpoints: Optional[List[str]] = None
+
+class ApigatewayServiceListResponse(NetworkingServiceListResponse):
+    api_details: Optional[Dict[str, Any]] = None  # Holds the extras per API ID
 
 
 # ------------------ CACHE HELPERS ------------------
@@ -382,7 +401,7 @@ def list_apigateway(session, region: str) -> List[str]:
         set_cache("global", region, "apigateway", apis)
         return apis
     except (ClientError, BotoCoreError) as e:
-        logger.exception("Error listing API Gateway APIs")
+        logger.exception("Error listing APec2I Gateway APIs")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -426,37 +445,139 @@ def get_vpc_detail(session, region: str, vpc_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def get_route53_detail(session, zone_id: str) -> Dict[str, Any]:
+def _get_route53_extras(session) -> Dict[str, Any]:
+    """
+    Return extra Route53-related resources:
+    - Hosted zones
+    - DNSSEC status
+    - Record counts / wildcards
+    - Health checks
+    - Open TCP endpoints (A/AAAA records pointing to public IPs)
+    """
     r53 = _safe_client(session, "route53")
+    extras: Dict[str, Any] = {
+        "hosted_zones": None,
+        "dnssec_enabled": None,
+        "record_counts": None,
+        "wildcard_records": None,
+        "health_checks": None,
+        "open_tcp_endpoints": None,
+    }
+
     try:
-        if zone_id.startswith("/hostedzone/"):
-            zone_id = zone_id.replace("/hostedzone/", "")
-        zone = r53.get_hosted_zone(Id=zone_id)["HostedZone"]
-        if not zone:
-            raise HTTPException(status_code=404, detail=f"Hosted zone {zone_id} not found")
-        recs = _route53_best_practices(r53, zone, zone_id)
-        return {"configuration": zone, "recommendations": recs}
-    except ClientError as e:
-        logger.exception("ClientError fetching Route53 detail")
-        # map NotFound-like to 404
-        raise HTTPException(status_code=404, detail=str(e))
-    except BotoCoreError as e:
-        logger.exception("BotoCoreError fetching Route53 detail")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Hosted zones
+        zones = r53.list_hosted_zones().get("HostedZones", [])
+        extras["hosted_zones"] = [z.get("Id").split("/")[-1] for z in zones] or None
+
+        # DNSSEC status per zone
+        dnssec_status: Dict[str, bool] = {}
+        for z in zones:
+            zone_id = z.get("Id").split("/")[-1]
+            try:
+                resp = r53.get_dnssec(HostedZoneId=zone_id)
+                status = resp.get("Status", {}).get("ServeSignature")
+                dnssec_status[zone_id] = status == "SIGNING"
+            except Exception:
+                dnssec_status[zone_id] = False
+        extras["dnssec_enabled"] = dnssec_status or None
+
+        # Record counts, wildcard records, and collect public IPs
+        record_counts: Dict[str, int] = {}
+        wildcards: Dict[str, List[str]] = {}
+        tcp_endpoints: List[str] = []
+
+        for z in zones:
+            zone_id = z.get("Id").split("/")[-1]
+            rrsets = r53.list_resource_record_sets(HostedZoneId=zone_id, MaxItems="1000").get("ResourceRecordSets", [])
+            record_counts[zone_id] = len(rrsets)
+            wildcards[zone_id] = [r.get("Name") for r in rrsets if r.get("Name", "").startswith("*.")]
+
+            # Collect TCP open endpoints (A/AAAA records pointing to public IPs)
+            for r in rrsets:
+                if r.get("Type") in ("A", "AAAA") and not r.get("AliasTarget"):
+                    for rec in r.get("ResourceRecords", []):
+                        ip = rec.get("Value")
+                        if ip:
+                            tcp_endpoints.append(ip)
+
+        extras["record_counts"] = record_counts or None
+        extras["wildcard_records"] = wildcards or None
+        extras["open_tcp_endpoints"] = list(set(tcp_endpoints)) or None
+
+        # Health checks
+        health_checks = r53.list_health_checks().get("HealthChecks", [])
+        extras["health_checks"] = [hc.get("Id") for hc in health_checks] or None
+
+    except Exception:
+        # Keep all as None if something fails
+        pass
+
+    return extras
 
 
-def get_apigateway_detail(session, region: str, api_id: str) -> Dict[str, Any]:
+def _get_apigateway_extras(session, region: str) -> Dict[str, Any]:
+    """
+    Return extra API Gateway-related resources:
+    - Stages per API
+    - Logging enabled
+    - X-Ray tracing
+    - Unauthenticated methods
+    - Endpoint type
+    - Custom domains
+    """
     ag = _safe_client(session, "apigateway", region)
+    extras: Dict[str, Any] = {}
     try:
-        api = ag.get_rest_api(restApiId=api_id)
-        recs = _apigw_best_practices(ag, api, api_id)
-        return {"configuration": api, "recommendations": recs}
-    except ClientError as e:
-        logger.exception("ClientError fetching API Gateway detail")
-        raise HTTPException(status_code=404, detail=str(e))
-    except BotoCoreError as e:
-        logger.exception("BotoCoreError fetching API Gateway detail")
-        raise HTTPException(status_code=500, detail=str(e))
+        apis = ag.get_rest_apis().get("items", [])
+        for api in apis:
+            api_id = api.get("id")
+            api_name = api.get("name")
+            stages_resp = ag.get_stages(restApiId=api_id).get("item", [])
+            stages_info = {}
+            unauth_methods = []
+
+            # Inspect stages
+            for st in stages_resp:
+                stage_name = st.get("stageName")
+                stages_info[stage_name] = {
+                    "logging_enabled": bool(st.get("methodSettings")),
+                    "tracing_enabled": st.get("tracingEnabled", False)
+                }
+
+            # Inspect resource methods for unauthorized access
+            resources = ag.get_resources(restApiId=api_id).get("items", [])
+            for r in resources:
+                for method in r.get("resourceMethods", {}).keys():
+                    try:
+                        mconf = ag.get_method(restApiId=api_id, resourceId=r["id"], httpMethod=method)
+                        if mconf.get("authorizationType") in (None, "NONE"):
+                            unauth_methods.append(f"{method} {r.get('path')}")
+                    except Exception:
+                        continue
+
+            # Endpoint type
+            endpoint_types = api.get("endpointConfiguration", {}).get("types", [])
+
+            # Custom domains
+            try:
+                domains_resp = ag.get_domain_names().get("items", [])
+                custom_domains = [d.get("domainName") for d in domains_resp if api_id in str(d.get("regionalDomainName", ""))]
+            except Exception:
+                custom_domains = []
+
+            extras[api_id] = {
+                "api_name": api_name,
+                "stages": stages_info or None,
+                "unauthenticated_methods": unauth_methods or None,
+                "endpoint_type": endpoint_types or None,
+                "custom_domains": custom_domains or None,
+            }
+
+    except Exception:
+        # Keep all as None if something fails
+        extras = {}
+
+    return extras
 
 
 def get_elb_detail(session, region: str, lb_arn: str) -> Dict[str, Any]:
@@ -476,6 +597,134 @@ def get_elb_detail(session, region: str, lb_arn: str) -> Dict[str, Any]:
         logger.exception("BotoCoreError fetching ELB detail")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ------------------ EXTRA INFO FOR VPC / ELB ------------------
+
+def _get_vpc_extras(session, region: str) -> Dict[str, Any]:
+    """Return extra VPC-related resources like subnets, IGW, SG, EIP, NAT, network interfaces, transit gateways."""
+    ec2 = _safe_client(session, "ec2", region)
+    extras: Dict[str, Any] = {
+        "subnets": None,
+        "internet_gateways": None,
+        "security_groups": None,
+        "elastic_ips": None,
+        "network_interfaces": None,
+        "nat_gateways": None,
+        "transit_gateways": None,
+        "bandwidth_usage": None,  # Placeholder, requires CloudWatch metrics
+        "target_groups": None,     # Not typical under VPC, can be optional
+    }
+
+    # Subnets
+    try:
+        subnets = ec2.describe_subnets().get("Subnets", [])
+        extras["subnets"] = [s.get("SubnetId") for s in subnets] or None
+    except Exception:
+        extras["subnets"] = None
+
+    # Internet Gateways
+    try:
+        igws = ec2.describe_internet_gateways().get("InternetGateways", [])
+        extras["internet_gateways"] = [i.get("InternetGatewayId") for i in igws] or None
+    except Exception:
+        extras["internet_gateways"] = None
+
+    # Security Groups
+    try:
+        sgs = ec2.describe_security_groups().get("SecurityGroups", [])
+        extras["security_groups"] = [s.get("GroupId") for s in sgs] or None
+    except Exception:
+        extras["security_groups"] = None
+
+    # Elastic IPs
+    try:
+        eips = ec2.describe_addresses().get("Addresses", [])
+        extras["elastic_ips"] = [e.get("PublicIp") for e in eips] or None
+    except Exception:
+        extras["elastic_ips"] = None
+
+    # Network Interfaces
+    try:
+        nis = ec2.describe_network_interfaces().get("NetworkInterfaces", [])
+        extras["network_interfaces"] = [ni.get("NetworkInterfaceId") for ni in nis] or None
+    except Exception:
+        extras["network_interfaces"] = None
+
+    # NAT Gateways
+    try:
+        nats = ec2.describe_nat_gateways().get("NatGateways", [])
+        extras["nat_gateways"] = [n.get("NatGatewayId") for n in nats] or None
+    except Exception:
+        extras["nat_gateways"] = None
+
+    # Transit Gateways
+    try:
+        tgs = ec2.describe_transit_gateways().get("TransitGateways", [])
+        extras["transit_gateways"] = [t.get("TransitGatewayId") for t in tgs] or None
+    except Exception:
+        extras["transit_gateways"] = None
+
+    # Bandwidth Usage (optional, CloudWatch metrics)
+    extras["bandwidth_usage"] = None
+
+    # Target groups usually under ELB, so keep None
+    extras["target_groups"] = None
+
+    return extras
+
+
+def _get_elb_extras(session, region: str) -> Dict[str, Any]:
+    """Return extra ELB-related resources like subnets, security groups, target groups, bandwidth usage."""
+    elb = _safe_client(session, "elbv2", region)
+    extras: Dict[str, Any] = {
+        "subnets": None,
+        "security_groups": None,
+        "target_groups": None,
+        "listeners": None,
+        "bandwidth_usage": None,
+    }
+
+    try:
+        lbs = elb.describe_load_balancers().get("LoadBalancers", [])
+        all_subnets: List[str] = []
+        all_sgs: List[str] = []
+        all_listeners: List[str] = []
+
+        for lb in lbs:
+            lb_arn = lb.get("LoadBalancerArn")
+            if not lb_arn:
+                continue
+
+            # Subnets & Security Groups from LB
+            all_subnets.extend(lb.get("AvailabilityZones", []) and [az.get("SubnetId") for az in lb.get("AvailabilityZones", []) if az.get("SubnetId")])
+            all_sgs.extend(lb.get("SecurityGroups", []) or [])
+
+            # Listeners
+            try:
+                listeners = elb.describe_listeners(LoadBalancerArn=lb_arn).get("Listeners", [])
+                all_listeners.extend([l.get("ListenerArn") for l in listeners if l.get("ListenerArn")])
+            except Exception:
+                continue
+
+            # Target groups
+            try:
+                tgs = elb.describe_target_groups(LoadBalancerArn=lb_arn).get("TargetGroups", [])
+                if tgs:
+                    extras["target_groups"] = [tg.get("TargetGroupArn") for tg in tgs if tg.get("TargetGroupArn")]
+            except Exception:
+                extras["target_groups"] = None
+
+        extras["subnets"] = list(set(all_subnets)) or None
+        extras["security_groups"] = list(set(all_sgs)) or None
+        extras["listeners"] = list(set(all_listeners)) or None
+
+    except Exception:
+        # Keep all as None if something fails
+        pass
+
+    # Bandwidth usage placeholder
+    extras["bandwidth_usage"] = None
+
+    return extras
 
 # ------------------ ROUTES ------------------
 
@@ -513,8 +762,7 @@ def list_networking_services(
         logger.exception("Unexpected error in list_networking_services")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.get("/networking/{service}", response_model=NetworkingServiceListResponse)
+@router.get("/networking/{service}", response_model=Union[NetworkingServiceListResponse, Route53ServiceListResponse, ApigatewayServiceListResponse])
 def list_service_resources(
     request: Request,
     service: str,
@@ -543,18 +791,67 @@ def list_service_resources(
         elif service == "elb":
             resources = list_elbs(session, region)
 
-        return NetworkingServiceListResponse(
-            account_id=account_id,
-            region=region,
-            service=service,
-            resources=resources,
-        )
+        response_data = {
+            "account_id": account_id,
+            "region": region,
+            "service": service,
+            "resources": resources,
+        }
+
+        if service == "vpc":
+            try:
+                extras = _get_vpc_extras(session, region)
+                response_data.update(extras)
+            except Exception:
+                pass
+
+        elif service == "elb":
+            try:
+                extras = _get_elb_extras(session, region)
+                response_data.update(extras)
+            except Exception:
+                pass
+
+        elif service == "route53":
+            try:
+                extras = _get_route53_extras(session)
+                response_data.update(extras)
+            except Exception:
+                pass
+        elif service == "apigateway":
+            try:
+                extras = _get_apigateway_extras(session, region)
+                response_data["api_details"] = extras  # this will hold the extras per API ID
+            except Exception:
+                pass
+
+
+        # --------------------------------------------------------------------
+
+        return response_data  # Pydantic allows extra keys dynamically
+
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Unexpected error in list_service_resources")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class NetworkingServiceListResponse(BaseModel):
+    account_id: str
+    region: str
+    service: str
+    resources: List[str]
+    subnets: Optional[List[str]] = None
+    internet_gateways: Optional[List[str]] = None
+    security_groups: Optional[List[str]] = None
+    elastic_ips: Optional[List[str]] = None
+    nat_gateways: Optional[List[str]] = None
+    network_interfaces: Optional[List[str]] = None
+    target_groups: Optional[List[str]] = None
+    transit_gateways: Optional[List[str]] = None
+    bandwidth_usage: Optional[Dict[str, Any]] = None
+    api_details: Optional[Dict[str, Any]] = None
 
 @router.post("/networking/{service}/detail", response_model=NetworkingResourceDetailResponse)
 def get_resource_detail(
@@ -606,3 +903,4 @@ def get_resource_detail(
     except Exception as e:
         logger.exception("Unexpected error in get_resource_detail")
         raise HTTPException(status_code=500, detail=str(e))
+    #``
