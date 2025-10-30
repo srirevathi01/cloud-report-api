@@ -3,6 +3,17 @@ version: 0.2
 phases:
   pre_build:
     commands:
+      - echo Fetching secrets from AWS Secrets Manager...
+      - export SECRET_NAME=${SECRET_NAME:-cloudapienv}
+      - export AWS_REGION=${AWS_REGION:-ap-south-1}
+      - |
+        # Fetch secrets from Secrets Manager and create .env file
+        aws secretsmanager get-secret-value \
+          --secret-id $SECRET_NAME \
+          --region $AWS_REGION \
+          --query SecretString \
+          --output text | jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' > .env
+      - echo "Environment file created successfully"
       - echo Logging into Amazon ECR...
       - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 047471737790.dkr.ecr.ap-south-1.amazonaws.com
       - COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
