@@ -29,9 +29,12 @@ def get_regions(aws_account_id: str, request: Request):
     Fetch active and inactive regions for the given AWS account ID.
     """
     try:
+        # Get the boto3 session from middleware
+        boto3_session = request.state.session
+
         # Fetch active and inactive regions using the helper function
-        regions = fetch_regions_for_account(aws_account_id, request.state.aws_credentials)
-        
+        regions = fetch_regions_for_account(aws_account_id, boto3_session)
+
         # Use the common response formatter
         return {
                 "aws_account_id": aws_account_id,
@@ -59,9 +62,12 @@ def get_service_count_of_all_region(aws_account_id: str, request: Request):
     Fetch the count of services in each region for the given AWS account ID.
     """
     try:
+        # Get the boto3 session from middleware
+        boto3_session = request.state.session
+
         # Fetch the service count using the helper function
-        service_count = fetch_service_count_by_region(aws_account_id, '', request.state.aws_credentials)
-        
+        service_count = fetch_service_count_by_region(aws_account_id, '', boto3_session)
+
         # Use the common response formatter
         return {
                 "aws_account_id": aws_account_id,
@@ -80,9 +86,12 @@ def get_service_count_by_region(aws_account_id: str, aws_region: str, request: R
     Fetch the count of services in each region for the given AWS account ID.
     """
     try:
+        # Get the boto3 session from middleware
+        boto3_session = request.state.session
+
         # Fetch the service count using the helper function
-        service_count = fetch_service_count_by_region(aws_account_id, aws_region, request.state.aws_credentials)
-        
+        service_count = fetch_service_count_by_region(aws_account_id, aws_region, boto3_session)
+
         # Use the common response formatter
         return {
                 "aws_account_id": aws_account_id,
@@ -96,39 +105,23 @@ def get_service_count_by_region(aws_account_id: str, aws_region: str, request: R
             data={}
         )
 
-def fetch_service_count_by_region(aws_account_id: str, resource_region='', credentials=None):
+def fetch_service_count_by_region(aws_account_id: str, resource_region='', boto3_session=None):
     """
-    Fetch active and inactive regions for an AWS account using an IAM STS role.
+    Fetch service count by region using a boto3 session.
     """
     try:
-        # Fetch the role name from the config file
-        role_name = None
-        for account in config:
-            if account["account_id"] == aws_account_id:
-                role_name = account["role_name"]
-                break
-
-        if not role_name:
-            raise Exception(f"No role found for AWS account ID: {aws_account_id}")
-        
-
+        # Fetch resource explorer view ARN from config
         resource_explorer_view_arn = None
         for account in config:
             if account["account_id"] == aws_account_id:
-                resource_explorer_view_arn = account["resource_explorer_view_arn"]
+                resource_explorer_view_arn = account.get("resource_explorer_view_arn")
                 break
 
         if not resource_explorer_view_arn:
             raise Exception(f"Create resource explorer view for AWS account ID: {aws_account_id}")
 
-        # Create an Resource explorer client using the assumed role credentials
-        rex_client = boto3.client(
-            "resource-explorer-2",
-            region_name='us-east-1',
-            aws_access_key_id=credentials["AccessKeyId"],
-            aws_secret_access_key=credentials["SecretAccessKey"],
-            aws_session_token=credentials["SessionToken"]
-        )
+        # Create a Resource Explorer client using the boto3 session
+        rex_client = boto3_session.client("resource-explorer-2", region_name='us-east-1')
 
         # Fetch the resources using the Resource Explorer client
         query_string='*'
@@ -163,40 +156,13 @@ def fetch_service_count_by_region(aws_account_id: str, resource_region='', crede
     except (BotoCoreError, ClientError) as e:
         raise Exception(f"Failed to fetch regions: {str(e)}")
     
-def fetch_regions_for_account(aws_account_id: str, credentials):
+def fetch_regions_for_account(aws_account_id: str, boto3_session):
     """
-    Fetch active and inactive regions for an AWS account using an IAM STS role.
+    Fetch active and inactive regions for an AWS account using a boto3 session.
     """
     try:
-        # Fetch the role name from the config file
-        role_name = None
-        for account in config:
-            if account["account_id"] == aws_account_id:
-                role_name = account["role_name"]
-                break
-
-        if not role_name:
-            raise Exception(f"No role found for AWS account ID: {aws_account_id}")
-        
-
-        resource_explorer_view_arn = None
-        for account in config:
-            if account["account_id"] == aws_account_id:
-                resource_explorer_view_arn = account["resource_explorer_view_arn"]
-                break
-
-        if not resource_explorer_view_arn:
-            raise Exception(f"Create resource explorer view for AWS account ID: {aws_account_id}")
-
-        print(f"Assumed role credentials: {credentials}")
-        # Create an EC2 client using the assumed role credentials
-        ec2_client = boto3.client(
-            "ec2",
-            region_name='us-east-1',
-            aws_access_key_id=credentials["AccessKeyId"],
-            aws_secret_access_key=credentials["SecretAccessKey"],
-            aws_session_token=credentials["SessionToken"]
-        )
+        # Create an EC2 client using the boto3 session from middleware
+        ec2_client = boto3_session.client("ec2", region_name='us-east-1')
 
         # Fetch all regions (active and inactive)
         regions_response = ec2_client.describe_regions(AllRegions=True)
