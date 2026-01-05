@@ -3,32 +3,47 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo Fetching secrets from AWS Secrets Manager...
-      - export SECRET_NAME=${SECRET_NAME:-cloudapienv}
-      - export AWS_REGION=${AWS_REGION:-ap-south-1}
+      - echo "Invoking Lambda to fetch environment variables..."
+
+      # Values provided by you
+      - export LAMBDA_FUNCTION_NAME=cloudapp_secrets
+      - export APPLICATION_ENV=prod
+      - export REPO_NAME=cloud-report
+      - export AWS_REGION=us-east-1
+
+      # Invoke Lambda and save output
       - |
-        # Fetch secrets from Secrets Manager and create .env file
-        aws secretsmanager get-secret-value \
-          --secret-id $SECRET_NAME \
+        aws lambda invoke \
+          --function-name $LAMBDA_FUNCTION_NAME \
           --region $AWS_REGION \
-          --query SecretString \
-          --output text | jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' > .env
-      - echo "Environment file created successfully"
-      - echo Logging into Amazon ECR...
+          --payload "{\"application\":\"$APPLICATION_ENV\",\"repoName\":\"$REPO_NAME\"}" \
+          response.json
+
+      # Convert Lambda response to .env file
+      - |
+        cat response.json | jq -r '.body' > .env
+
+      - echo ".env file created successfully"
+      - cat .env
+
+      - echo "Logging into Amazon ECR..."
       - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 486296873132.dkr.ecr.us-east-1.amazonaws.com
+
       - COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=$COMMIT_ID
       - REPOSITORY_URI=486296873132.dkr.ecr.us-east-1.amazonaws.com/cloud-report
+
   build:
     commands:
-      - echo Building the Docker image...
+      - echo "Building the Docker image..."
       - docker build -t $IMAGE_TAG .
       - docker tag $IMAGE_TAG $REPOSITORY_URI:$IMAGE_TAG
+
   post_build:
     commands:
-      - echo Pushing Docker images...
+      - echo "Pushing Docker image..."
       - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - echo Writing image definitions file...
+      - echo "Writing image definitions file..."
       - printf '[{"name":"fast-api","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
 
 artifacts:
