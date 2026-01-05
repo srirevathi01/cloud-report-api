@@ -5,23 +5,20 @@ phases:
     commands:
       - echo "Invoking Lambda to fetch environment variables..."
 
-      # Values provided by you
       - export LAMBDA_FUNCTION_NAME=cloudapp_secrets
       - export APPLICATION_ENV=prod
       - export REPO_NAME=cloud-report
       - export AWS_REGION=us-east-1
 
-      # Invoke Lambda and save output
       - |
         aws lambda invoke \
           --function-name $LAMBDA_FUNCTION_NAME \
           --region $AWS_REGION \
+          --cli-binary-format raw-in-base64-out \
           --payload "{\"application\":\"$APPLICATION_ENV\",\"repoName\":\"$REPO_NAME\"}" \
           response.json
 
-      # Convert Lambda response to .env file
-      - |
-        cat response.json | jq -r '.body' > .env
+      - cat response.json | jq -r '.body' > .env
 
       - echo ".env file created successfully"
       - cat .env
