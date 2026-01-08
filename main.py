@@ -71,13 +71,13 @@ app.include_router(billing_router, prefix="/api", tags=["billing"])
 
 # Add Cognito authentication middleware
 # This must be added BEFORE the AWS middleware so user info is available
-app.add_middleware(
-    CognitoAuthMiddleware,
-    exclude_paths=['/docs', '/redoc', '/openapi.json', '/health', '/favicon', '/api/auth']
-)
+# app.add_middleware(
+#     CognitoAuthMiddleware,
+#     exclude_paths=['/docs', '/redoc', '/openapi.json', '/health', '/favicon', '/api/auth']
+# )
 
 # Add custom AWS middleware after authentication
-app.add_middleware(AWSMiddleware)
+# app.add_middleware(AWSMiddleware)
 
 # Log configuration status
 cognito_configured = all([
