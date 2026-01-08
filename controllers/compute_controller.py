@@ -801,14 +801,13 @@ async def list_compute_resources(
             detail=f"Invalid service '{service}'. Supported services: {', '.join(COMPUTE_SERVICES)}"
         )
     
-    # session = getattr(request.state, "session", None)
-    # if not session:
-    #     raise HTTPException(status_code=401, detail="AWS session not found")
+    session = getattr(request.state, "session", None)
+    if not session:
+        raise HTTPException(status_code=401, detail="AWS session not found")
     
     try:
         if service == "ec2":
             resources = list_ec2_instances(session, account_id, region)
-            resources = list_ec2_instances(account_id, region)
             data = [inst.dict() for inst in resources]
         elif service == "lambda":
             resources = list_lambda_functions(session, account_id, region)
