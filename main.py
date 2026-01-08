@@ -37,7 +37,7 @@ from controllers.billing_controller import router as billing_router
 
 
 # This is a list of allowed origins for CORS
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "https://d1fd4y10eleeus.cloudfront.net","http://localhost:3000").split(",")
 
 # Initialize app
 app = FastAPI(
