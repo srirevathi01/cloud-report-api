@@ -77,7 +77,7 @@ app.include_router(billing_router, prefix="/api", tags=["billing"])
 # )
 
 # Add custom AWS middleware after authentication
-# app.add_middleware(AWSMiddleware)
+app.add_middleware(AWSMiddleware)
 
 # Log configuration status
 cognito_configured = all([
