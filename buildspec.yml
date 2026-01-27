@@ -24,12 +24,11 @@ phases:
       - cat .env
 
       - echo "Logging into Amazon ECR..."
-      - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 486296873132.dkr.ecr.us-east-1.amazonaws.com
+      - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 047471737790.dkr.ecr.ap-south-1.amazonaws.com
 
       - COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=$COMMIT_ID
-      - REPOSITORY_URI=486296873132.dkr.ecr.us-east-1.amazonaws.com/cloud-report
-
+      - REPOSITORY_URI=047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloud-report
   build:
     commands:
       - echo "Building the Docker image..."
