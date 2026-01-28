@@ -6,20 +6,21 @@ phases:
       - echo "Invoking Lambda to fetch environment variables..."
 
       - export LAMBDA_FUNCTION_NAME=cloudapp_secrets
+      - export LAMBDA_REGION=ap-south-1
       - export APPLICATION_ENV=prod
       - export REPO_NAME=cloud-report
-      - export AWS_REGION=ap-south-1
+
+      - yum install -y jq || apt-get install -y jq
 
       - |
         aws lambda invoke \
           --function-name $LAMBDA_FUNCTION_NAME \
-          --region $AWS_REGION \
+          --region $LAMBDA_REGION \
           --cli-binary-format raw-in-base64-out \
           --payload "{\"application\":\"$APPLICATION_ENV\",\"repoName\":\"$REPO_NAME\"}" \
           response.json
 
       - cat response.json | jq -r '.body' > .env
-
       - echo ".env file created successfully"
       - cat .env
 
@@ -29,6 +30,7 @@ phases:
       - COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=$COMMIT_ID
       - REPOSITORY_URI=047471737790.dkr.ecr.ap-south-1.amazonaws.com/cloud-report
+
   build:
     commands:
       - echo "Building the Docker image..."
