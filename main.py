@@ -34,6 +34,7 @@ from controllers.network_controller import router as network_router
 from controllers.storage_controller import router as storage_router
 from controllers.security_controller import router as security_router
 from controllers.billing_controller import router as billing_router
+from controllers.dashboard_controller import router as dashboard_router
 
 
 # This is a list of allowed origins for CORS
@@ -58,6 +59,7 @@ app.add_middleware(
 # Routers
 app.include_router(healthcheck_router, tags=["healthcheck"])
 app.include_router(auth_router, prefix="/api", tags=["authentication"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(compute_router, prefix="/api", tags=["compute"])
 app.include_router(monitoring_router, prefix="/api", tags=["monitoring"])
 app.include_router(regions_router, prefix="/api", tags=["regions"])
