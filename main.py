@@ -34,18 +34,10 @@ from controllers.network_controller import router as network_router
 from controllers.storage_controller import router as storage_router
 from controllers.security_controller import router as security_router
 from controllers.billing_controller import router as billing_router
-<<<<<<< HEAD
 
 
 # This is a list of allowed origins for CORS
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "https://d1fd4y10eleeus.cloudfront.net").split(",")
-=======
-from controllers.dashboard_controller import router as dashboard_router
-
-
-# This is a list of allowed origins for CORS
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
->>>>>>> upstream/prod
 
 # Initialize app
 app = FastAPI(
@@ -66,10 +58,6 @@ app.add_middleware(
 # Routers
 app.include_router(healthcheck_router, tags=["healthcheck"])
 app.include_router(auth_router, prefix="/api", tags=["authentication"])
-<<<<<<< HEAD
-=======
-app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
->>>>>>> upstream/prod
 app.include_router(compute_router, prefix="/api", tags=["compute"])
 app.include_router(monitoring_router, prefix="/api", tags=["monitoring"])
 app.include_router(regions_router, prefix="/api", tags=["regions"])
@@ -83,17 +71,10 @@ app.include_router(billing_router, prefix="/api", tags=["billing"])
 
 # Add Cognito authentication middleware
 # This must be added BEFORE the AWS middleware so user info is available
-<<<<<<< HEAD
 # app.add_middleware(
 #     CognitoAuthMiddleware,
 #     exclude_paths=['/docs', '/redoc', '/openapi.json', '/health', '/favicon', '/api/auth']
 # )
-=======
-app.add_middleware(
-    CognitoAuthMiddleware,
-    exclude_paths=['/docs', '/redoc', '/openapi.json', '/health', '/favicon', '/api/auth']
-)
->>>>>>> upstream/prod
 
 # Add custom AWS middleware after authentication
 app.add_middleware(AWSMiddleware)
