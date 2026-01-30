@@ -33,7 +33,12 @@ class AWSMiddleware(BaseHTTPMiddleware):
 
             # Skip AWS middleware for these paths (they don't need AWS account validation)
             if request.url.path in ["/docs", "/favicon", "/openapi.json", "/health"] or \
+<<<<<<< HEAD
                request.url.path.startswith("/api/auth"):
+=======
+               request.url.path.startswith("/api/auth") or \
+               request.url.path.startswith("/api/dashboard"):
+>>>>>>> upstream/prod
                 return await call_next(request)
 
             aws_account_id = None
