@@ -800,7 +800,7 @@ async def list_compute_resources(
             status_code=400,
             detail=f"Invalid service '{service}'. Supported services: {', '.join(COMPUTE_SERVICES)}"
         )
-    
+    print (request)
     session = getattr(request.state, "session", None)
     if not session:
         raise HTTPException(status_code=401, detail="AWS session not found")

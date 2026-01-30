@@ -1,10 +1,6 @@
 [
     {
-<<<<<<< HEAD
         "account_id": "729047448122",
-=======
-        "account_id": "729047448122", 
->>>>>>> upstream/prod
         "role_name": "cloud-report-api",
         "resource_explorer_view_arn": "arn:aws:resource-explorer-2:us-east-1:729047448122:view/all-resources/402c2bfd-ee19-4ddd-9d58-d7b47ee6a12c"
     }
